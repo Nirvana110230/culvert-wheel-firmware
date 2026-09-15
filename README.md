@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-当前仅开展离线开发。工程包含 CubeMX 外设初始化代码和不依赖 HAL 的纯状态机骨架，但状态机尚未接入 `main()`，也没有 MSSD 写寄存器、Modbus 业务、BMS、松闸或非零速度发送实现。
+当前仅开展离线开发。工程包含 CubeMX 外设初始化代码、不依赖 HAL 的纯状态机，以及尚未在 `main()` 启动或接入状态机的RC捕获/纯解析模块。工程没有 MSSD 写寄存器、Modbus 业务、BMS、松闸或非零速度发送实现。
 
 状态机使用明确的 `REMOTE_ARMING` 和 `INSPECT_REQUESTED` 状态。一次性动作只表达清除命令、请求零速、请求抱闸、请求巡检或取消巡检；持续运动权限由当前状态的纯查询接口给出。权限仅代表上层授权，不代表立即松闸或发送速度。
 
@@ -19,12 +19,12 @@ cmake --preset Release
 cmake --build --preset Release
 ```
 
-主机侧状态机测试可在已有主机 C 编译器的环境中构建运行。测试工程位于 `tests/`，不依赖 STM32 HAL。
+主机侧状态机和RC纯逻辑测试可在已有主机 C 编译器的环境中构建运行。测试工程位于 `tests/`，不依赖 STM32 HAL。RC模块设计和待验证参数见 [RC输入模块离线设计](docs/rc-input.md)。
 
 ## CubeMX 重新生成注意事项
 
 - `.ioc` 是外设配置的唯一生成输入，重新生成前先检查 Git 工作树并保存差异。
-- 不要把业务代码放入 `Core/` 或 `cmake/stm32cubemx/`；业务代码保存在 `Application/`，主机测试保存在 `tests/`。
+- 不要把业务代码放入 `Core/` 或 `cmake/stm32cubemx/`；状态机保存在 `Application/`，HAL适配保存在 `Bsp/`，纯服务逻辑保存在 `Services/`，主机测试保存在 `tests/`。
 - 不直接修改 `cmake/stm32cubemx/CMakeLists.txt`。业务源文件和包含目录只在顶层 `CMakeLists.txt` 中接入。
 - 重新生成后必须审查 `.ioc`、`Core/`、启动文件、链接脚本和生成 CMake 文件的差异。
 - 重新生成后必须重新执行主机测试和 STM32 Release 构建，并再次核对 GPIO 初始安全电平。

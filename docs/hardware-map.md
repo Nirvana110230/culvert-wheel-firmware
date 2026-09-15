@@ -20,6 +20,8 @@
 | CH6 | PC9 | TIM8_CH4 |
 | CH7急停 | PA6 | TIM3_CH1 |
 
+TIM3和TIM8均配置为1 MHz输入捕获计数。当前仅编译RC捕获接口，`main()`没有调用`rc_capture_start()`，因此空工程启动后不会主动开启这些捕获通道。阈值、消抖和失联策略见 [RC输入模块离线设计](rc-input.md)。
+
 ## 指示器件
 
 | 功能 | MCU 引脚 | 有效电平 |
