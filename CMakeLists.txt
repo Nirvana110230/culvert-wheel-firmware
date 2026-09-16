@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Services/Src/rc_input.c
     Protocol/Src/jetson_protocol.c
     Protocol/Src/modbus_rtu.c
+    Protocol/Src/mssd_driver.c
     Bsp/Src/jetson_uart_transport.c
     Bsp/Src/rs485_transport.c
 )
@@ -63,6 +64,7 @@ set_source_files_properties(
     Services/Src/rc_input.c
     Protocol/Src/jetson_protocol.c
     Protocol/Src/modbus_rtu.c
+    Protocol/Src/mssd_driver.c
     Bsp/Src/jetson_uart_transport.c
     Bsp/Src/rs485_transport.c
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror"

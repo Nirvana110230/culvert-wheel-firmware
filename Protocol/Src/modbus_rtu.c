@@ -212,41 +212,115 @@ static bool request_is_valid(const uint8_t *request, size_t length)
     }
 }
 
-bool modbus_rtu_validate_response(const uint8_t *request,
-                                  size_t request_length,
-                                  const uint8_t *response,
-                                  size_t response_length)
+static modbus_rtu_validation_result_t validation_result(
+    modbus_rtu_validation_status_t status,
+    uint8_t exception_code)
+{
+    modbus_rtu_validation_result_t result;
+
+    result.status = status;
+    result.exception_code = exception_code;
+    return result;
+}
+
+modbus_rtu_validation_result_t modbus_rtu_validate_response_detailed(
+    const uint8_t *request,
+    size_t request_length,
+    const uint8_t *response,
+    size_t response_length)
 {
     uint16_t requested_count;
+    size_t expected_length;
 
-    if (!request_is_valid(request, request_length) || (response == NULL) ||
-        (response_length < 5u) || (response[0] != request[0]) ||
-        !crc_is_valid(response, response_length))
+    if ((request == NULL) || (response == NULL))
     {
-        return false;
+        return validation_result(MODBUS_RTU_VALIDATION_ARGUMENT_ERROR, 0u);
+    }
+    if (!request_is_valid(request, request_length))
+    {
+        return validation_result(MODBUS_RTU_VALIDATION_REQUEST_ERROR, 0u);
+    }
+    if (response_length < 5u)
+    {
+        return validation_result(MODBUS_RTU_VALIDATION_LENGTH_ERROR, 0u);
+    }
+    if (response[0] != request[0])
+    {
+        return validation_result(MODBUS_RTU_VALIDATION_SLAVE_ERROR, 0u);
     }
 
     if (response[1] == (uint8_t)(request[1] | MODBUS_EXCEPTION_MASK))
     {
-        return response_length == 5u;
+        if (response_length != 5u)
+        {
+            return validation_result(MODBUS_RTU_VALIDATION_LENGTH_ERROR, 0u);
+        }
+        if (!crc_is_valid(response, response_length))
+        {
+            return validation_result(MODBUS_RTU_VALIDATION_CRC_ERROR, 0u);
+        }
+        return validation_result(MODBUS_RTU_VALIDATION_EXCEPTION, response[2]);
     }
     if (response[1] != request[1])
     {
-        return false;
+        return validation_result(MODBUS_RTU_VALIDATION_FUNCTION_ERROR, 0u);
     }
 
     switch (request[1])
     {
         case MODBUS_FUNC_READ_HOLDING:
             requested_count = read_u16_be(&request[4]);
-            return (response[2] == (uint8_t)(requested_count * 2u)) &&
-                   (response_length == ((size_t)response[2] + 5u));
+            expected_length = 5u + ((size_t)requested_count * 2u);
+            if ((response_length != expected_length) ||
+                (response[2] != (uint8_t)(requested_count * 2u)))
+            {
+                return validation_result(MODBUS_RTU_VALIDATION_LENGTH_ERROR, 0u);
+            }
+            break;
         case MODBUS_FUNC_WRITE_SINGLE:
         case MODBUS_FUNC_WRITE_MULTIPLE:
-            return (response_length == 8u) &&
-                   (response[2] == request[2]) && (response[3] == request[3]) &&
-                   (response[4] == request[4]) && (response[5] == request[5]);
+            if (response_length != 8u)
+            {
+                return validation_result(MODBUS_RTU_VALIDATION_LENGTH_ERROR, 0u);
+            }
+            break;
         default:
-            return false;
+            return validation_result(MODBUS_RTU_VALIDATION_REQUEST_ERROR, 0u);
     }
+
+    if (!crc_is_valid(response, response_length))
+    {
+        return validation_result(MODBUS_RTU_VALIDATION_CRC_ERROR, 0u);
+    }
+
+    switch (request[1])
+    {
+        case MODBUS_FUNC_READ_HOLDING:
+            return validation_result(MODBUS_RTU_VALIDATION_OK, 0u);
+        case MODBUS_FUNC_WRITE_SINGLE:
+        case MODBUS_FUNC_WRITE_MULTIPLE:
+            if ((response[2] != request[2]) || (response[3] != request[3]) ||
+                (response[4] != request[4]) || (response[5] != request[5]))
+            {
+                return validation_result(MODBUS_RTU_VALIDATION_ECHO_ERROR, 0u);
+            }
+            return validation_result(MODBUS_RTU_VALIDATION_OK, 0u);
+        default:
+            return validation_result(MODBUS_RTU_VALIDATION_REQUEST_ERROR, 0u);
+    }
+}
+
+bool modbus_rtu_validate_response(const uint8_t *request,
+                                  size_t request_length,
+                                  const uint8_t *response,
+                                  size_t response_length)
+{
+    const modbus_rtu_validation_result_t result =
+        modbus_rtu_validate_response_detailed(request,
+                                              request_length,
+                                              response,
+                                              response_length);
+
+    return (result.status == MODBUS_RTU_VALIDATION_OK) ||
+           (result.status == MODBUS_RTU_VALIDATION_EXCEPTION);
 }

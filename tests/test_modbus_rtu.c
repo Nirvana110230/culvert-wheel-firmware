@@ -196,6 +196,83 @@ static bool test_validate_exception_response(void)
     return true;
 }
 
+static bool test_detailed_validation_reports_specific_errors(void)
+{
+    uint8_t request[8];
+    uint8_t response[8];
+    uint8_t exception[] = {0x01, 0x86, 0x02, 0x00, 0x00};
+    size_t request_length;
+    modbus_rtu_validation_result_t result;
+
+    CHECK(modbus_rtu_build_write_single(1u,
+                                         0x0038u,
+                                         0u,
+                                         request,
+                                         sizeof(request),
+                                         &request_length));
+
+    (void)memcpy(response, request, sizeof(response));
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_OK);
+    CHECK(result.exception_code == 0u);
+
+    response[7] ^= 1u;
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_CRC_ERROR);
+
+    (void)memcpy(response, request, sizeof(response));
+    response[0] = 2u;
+    append_crc(response, 6u);
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_SLAVE_ERROR);
+
+    (void)memcpy(response, request, sizeof(response));
+    response[1] = 0x03u;
+    append_crc(response, 6u);
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_FUNCTION_ERROR);
+
+    (void)memcpy(response, request, sizeof(response));
+    response[5] = 1u;
+    append_crc(response, 6u);
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_ECHO_ERROR);
+
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   response,
+                                                   sizeof(response) - 1u);
+    CHECK(result.status == MODBUS_RTU_VALIDATION_LENGTH_ERROR);
+
+    append_crc(exception, 3u);
+    result = modbus_rtu_validate_response_detailed(request,
+                                                   request_length,
+                                                   exception,
+                                                   sizeof(exception));
+    CHECK(result.status == MODBUS_RTU_VALIDATION_EXCEPTION);
+    CHECK(result.exception_code == 0x02u);
+    CHECK(modbus_rtu_validate_response(request,
+                                       request_length,
+                                       exception,
+                                       sizeof(exception)));
+    return true;
+}
+
 static bool test_reject_crc_slave_function_and_echo_errors(void)
 {
     uint8_t request[8];
@@ -271,6 +348,7 @@ int main(void)
     RUN(test_validate_read_response);
     RUN(test_validate_write_echoes);
     RUN(test_validate_exception_response);
+    RUN(test_detailed_validation_reports_specific_errors);
     RUN(test_reject_crc_slave_function_and_echo_errors);
     RUN(test_reject_truncated_and_trailing_bytes);
     printf("all %u modbus_rtu tests passed\n", tests_run);

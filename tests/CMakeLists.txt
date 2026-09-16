@@ -67,6 +67,28 @@ target_compile_features(rs485_transport_tests PRIVATE c_std_11)
 target_compile_options(rs485_transport_tests PRIVATE -Wall -Wextra -Werror -pedantic)
 add_test(NAME rs485_transport COMMAND rs485_transport_tests)
 
+add_executable(mssd_driver_tests
+    test_mssd_driver.c
+    ../Protocol/Src/mssd_driver.c
+    ../Protocol/Src/modbus_rtu.c
+    ../Bsp/Src/rs485_transport.c
+)
+
+target_include_directories(mssd_driver_tests PRIVATE
+    ../Protocol/Inc
+    ../Bsp/Inc
+)
+
+target_compile_features(mssd_driver_tests PRIVATE c_std_11)
+target_compile_options(mssd_driver_tests PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+    -pedantic
+)
+
+add_test(NAME mssd_driver COMMAND mssd_driver_tests)
+
 add_executable(jetson_uart_transport_tests
     test_jetson_uart_transport.c
     ../Bsp/Src/jetson_uart_transport.c
