@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-当前仅开展离线开发。工程包含 CubeMX 外设初始化代码、不依赖 HAL 的纯状态机，以及尚未在 `main()` 启动或接入状态机的RC捕获/纯解析模块。工程没有 MSSD 写寄存器、Modbus 业务、BMS、松闸或非零速度发送实现。
+当前仅开展离线开发。RC、Jetson、状态机、运动监督、运动学、MSSD/Modbus 和RS485 DMA已通过非阻塞组合层接入 `main()`。启动后只允许接收通信、读取MSSD配置/状态并执行安全停止；默认配置关闭方向映射、最大RPM和应用运动授权，因此任何RC或Jetson非零命令都不能形成非零RPM事务。
 
 状态机使用明确的 `REMOTE_ARMING` 和 `INSPECT_REQUESTED` 状态。一次性动作只表达清除命令、请求零速、请求抱闸、请求巡检或取消巡检；持续运动权限由当前状态的纯查询接口给出。权限仅代表上层授权，不代表立即松闸或发送速度。
 
@@ -19,7 +19,7 @@ cmake --preset Release
 cmake --build --preset Release
 ```
 
-主机侧状态机和RC纯逻辑测试可在已有主机 C 编译器的环境中构建运行。测试工程位于 `tests/`，不依赖 STM32 HAL。RC模块设计和待验证参数见 [RC输入模块离线设计](docs/rc-input.md)。
+主机侧测试可在已有主机 C 编译器的环境中构建运行。测试工程位于 `tests/`，HAL边界使用测试桩，不访问真实串口或硬件。RC模块设计和待验证参数见 [RC输入模块离线设计](docs/rc-input.md)，主链路与默认锁见 [底盘控制主链路](docs/chassis-control.md)。
 
 ## CubeMX 重新生成注意事项
 

@@ -45,6 +45,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/Src/app_state_machine.c
+    Application/Src/chassis_app.c
+    Application/Src/chassis_kinematics.c
+    Application/Src/motion_supervisor.c
     Bsp/Src/rc_capture.c
     Services/Src/rc_input.c
     Protocol/Src/jetson_protocol.c
@@ -64,6 +67,9 @@ set_source_files_properties(
 )
 
 set_source_files_properties(
+    Application/Src/chassis_app.c
+    Application/Src/chassis_kinematics.c
+    Application/Src/motion_supervisor.c
     Bsp/Src/rc_capture.c
     Services/Src/rc_input.c
     Protocol/Src/jetson_protocol.c

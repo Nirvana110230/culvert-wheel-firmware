@@ -679,6 +679,22 @@ void mssd_driver_poll(mssd_driver_t *driver, uint32_t now_ms)
     }
 }
 
+bool mssd_driver_abort_for_safety(mssd_driver_t *driver, uint32_t now_ms)
+{
+    if ((driver == NULL) ||
+        ((driver->state != MSSD_DRIVER_WAITING_TRANSPORT) &&
+         (driver->state != MSSD_DRIVER_WAITING_RESPONSE)))
+    {
+        return false;
+    }
+    if (!rs485_transport_abort(driver->transport, now_ms))
+    {
+        return false;
+    }
+    finish_failure(driver, MSSD_ERROR_ABORTED_FOR_SAFETY);
+    return true;
+}
+
 mssd_response_status_t mssd_driver_on_response(mssd_driver_t *driver,
                                                const uint8_t *data,
                                                size_t length,

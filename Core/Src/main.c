@@ -25,6 +25,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "chassis_app.h"
 
 /* USER CODE END Includes */
 
@@ -46,6 +47,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+static chassis_app_t chassis_app;
+static bool chassis_app_ready;
 
 /* USER CODE END PV */
 
@@ -95,6 +98,19 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
+  {
+    const chassis_app_config_t config = chassis_app_default_config();
+
+    chassis_app_ready =
+        chassis_app_init(&chassis_app,
+                         &config,
+                         &huart2,
+                         huart2.hdmarx,
+                         huart2.hdmatx,
+                         RS485_DE_GPIO_Port,
+                         RS485_DE_Pin) &&
+        chassis_app_start(&chassis_app);
+  }
 
   /* USER CODE END 2 */
 
@@ -105,6 +121,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (chassis_app_ready)
+    {
+      chassis_app_poll(&chassis_app, HAL_GetTick());
+    }
   }
   /* USER CODE END 3 */
 }

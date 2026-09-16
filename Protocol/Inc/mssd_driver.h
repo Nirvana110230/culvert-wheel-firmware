@@ -112,6 +112,7 @@ typedef enum
     MSSD_ERROR_BUILD_FRAME,
     MSSD_ERROR_TRANSPORT,
     MSSD_ERROR_TIMEOUT,
+    MSSD_ERROR_ABORTED_FOR_SAFETY,
     MSSD_ERROR_INVALID_RESPONSE,
     MSSD_ERROR_MODBUS_EXCEPTION,
     MSSD_ERROR_PARTIAL_COMMIT
@@ -236,6 +237,9 @@ mssd_request_status_t mssd_driver_request_brake(mssd_driver_t *driver,
                                                 uint32_t now_ms);
 
 void mssd_driver_poll(mssd_driver_t *driver, uint32_t now_ms);
+
+/* Cancels only an active transaction and preserves any partial-commit evidence. */
+bool mssd_driver_abort_for_safety(mssd_driver_t *driver, uint32_t now_ms);
 
 /* Consumes response bytes synchronously and never retains the caller's pointer. */
 mssd_response_status_t mssd_driver_on_response(mssd_driver_t *driver,

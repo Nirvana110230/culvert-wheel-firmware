@@ -133,6 +133,11 @@ static bool deliver_candidate(const uint8_t *frame, size_t length, void *context
     if (status == MSSD_RESPONSE_INVALID_FRAME)
     {
         ++adapter->stats.invalid_frames;
+        if (mssd_driver_get_error(adapter->driver).modbus_status ==
+            MODBUS_RTU_VALIDATION_CRC_ERROR)
+        {
+            ++adapter->stats.crc_errors;
+        }
         return true;
     }
     if (status == MSSD_RESPONSE_ACCEPTED)
@@ -371,6 +376,7 @@ void usart2_rs485_adapter_dispatch_tx_dma_irq(DMA_HandleTypeDef *dma)
     }
     else
     {
+        ++adapter->stats.dma_errors;
         adapter->uart_error_pending = true;
     }
 }

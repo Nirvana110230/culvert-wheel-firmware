@@ -17,7 +17,14 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *uart, uint16_t size)
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *uart)
 {
-    usart2_rs485_adapter_dispatch_uart_tc(uart);
+    if (uart == &huart1)
+    {
+        jetson_uart_transport_dispatch_tx_complete();
+    }
+    else
+    {
+        usart2_rs485_adapter_dispatch_uart_tc(uart);
+    }
 }
 
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *uart)

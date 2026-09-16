@@ -27,11 +27,13 @@ typedef struct
     uint32_t rx_overruns;
     uint32_t accepted_frames;
     uint32_t invalid_frames;
+    uint32_t crc_errors;
     uint32_t unexpected_frames;
     uint32_t tx_dma_events;
     uint32_t invalid_tx_dma_events;
     uint32_t uart_tc_events;
     uint32_t uart_errors;
+    uint32_t dma_errors;
     uint32_t receive_start_failures;
     uint32_t receive_abort_failures;
     uint32_t transmit_start_failures;

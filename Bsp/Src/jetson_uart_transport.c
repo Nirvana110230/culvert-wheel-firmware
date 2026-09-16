@@ -47,6 +47,8 @@ static void clear_receive_state(jetson_uart_transport_t *transport)
     transport->dma_position = 0u;
     transport->ring_head = 0u;
     transport->ring_tail = 0u;
+    transport->tx_complete_pending = false;
+    transport->tx_busy = false;
     jetson_protocol_reset_partial_frame(transport->parser);
 }
 
@@ -81,6 +83,25 @@ bool jetson_uart_transport_start(jetson_uart_transport_t *transport,
         return false;
     }
     return true;
+}
+
+bool jetson_uart_transport_stop(jetson_uart_transport_t *transport)
+{
+    bool success = true;
+
+    if ((transport == NULL) || (active_transport != transport))
+    {
+        return false;
+    }
+    transport->state = JETSON_UART_STOPPED;
+    if (HAL_UART_DMAStop(&huart1) != HAL_OK)
+    {
+        ++transport->stats.dma_stop_failures;
+        success = false;
+    }
+    clear_receive_state(transport);
+    active_transport = NULL;
+    return success;
 }
 
 bool jetson_uart_transport_reset(jetson_uart_transport_t *transport)
@@ -161,6 +182,11 @@ void jetson_uart_transport_poll(jetson_uart_transport_t *transport, uint32_t now
     {
         (void)jetson_uart_transport_reset(transport);
     }
+    if (transport->tx_complete_pending)
+    {
+        transport->tx_complete_pending = false;
+        transport->tx_busy = false;
+    }
 
     while ((transport->state == JETSON_UART_RUNNING) &&
            (transport->ring_tail != transport->ring_head))
@@ -178,10 +204,23 @@ bool jetson_uart_transport_send_async(jetson_uart_transport_t *transport,
                                       const uint8_t *data,
                                       size_t length)
 {
-    (void)transport;
-    (void)data;
-    (void)length;
-    return false;
+    if ((transport == NULL) || (data == NULL) || (length == 0u) ||
+        (length > sizeof(transport->tx_buffer)) ||
+        (transport->state != JETSON_UART_RUNNING) || transport->tx_busy)
+    {
+        return false;
+    }
+    (void)memcpy(transport->tx_buffer, data, length);
+    transport->tx_busy = true;
+    if (HAL_UART_Transmit_DMA(&huart1,
+                              transport->tx_buffer,
+                              (uint16_t)length) != HAL_OK)
+    {
+        transport->tx_busy = false;
+        ++transport->stats.tx_start_failures;
+        return false;
+    }
+    return true;
 }
 
 void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position)
@@ -197,5 +236,14 @@ void jetson_uart_transport_dispatch_uart_error(void)
     if (active_transport != NULL)
     {
         jetson_uart_transport_on_uart_error(active_transport);
+    }
+}
+
+void jetson_uart_transport_dispatch_tx_complete(void)
+{
+    if (active_transport != NULL)
+    {
+        active_transport->tx_complete_pending = true;
+        ++active_transport->stats.tx_completions;
     }
 }

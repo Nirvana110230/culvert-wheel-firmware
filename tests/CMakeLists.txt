@@ -28,6 +28,55 @@ endif()
 
 add_test(NAME app_state_machine COMMAND app_state_machine_tests)
 
+add_executable(chassis_kinematics_tests
+    test_chassis_kinematics.c
+    ../Application/Src/chassis_kinematics.c
+)
+target_include_directories(chassis_kinematics_tests PRIVATE ../Application/Inc)
+target_compile_features(chassis_kinematics_tests PRIVATE c_std_11)
+target_compile_options(chassis_kinematics_tests PRIVATE -Wall -Wextra -Werror -pedantic)
+add_test(NAME chassis_kinematics COMMAND chassis_kinematics_tests)
+
+add_executable(motion_supervisor_tests
+    test_motion_supervisor.c
+    ../Application/Src/motion_supervisor.c
+)
+target_include_directories(motion_supervisor_tests PRIVATE
+    ../Application/Inc
+    ../Protocol/Inc
+    ../Bsp/Inc
+)
+target_compile_features(motion_supervisor_tests PRIVATE c_std_11)
+target_compile_options(motion_supervisor_tests PRIVATE -Wall -Wextra -Werror -pedantic)
+add_test(NAME motion_supervisor COMMAND motion_supervisor_tests)
+
+add_executable(chassis_app_tests
+    test_chassis_app.c
+    ../Application/Src/chassis_app.c
+    ../Application/Src/app_state_machine.c
+    ../Application/Src/chassis_kinematics.c
+    ../Application/Src/motion_supervisor.c
+    ../Services/Src/rc_input.c
+    ../Protocol/Src/jetson_protocol.c
+    ../Protocol/Src/modbus_rtu.c
+    ../Protocol/Src/modbus_rx_assembler.c
+    ../Protocol/Src/mssd_driver.c
+    ../Bsp/Src/jetson_uart_transport.c
+    ../Bsp/Src/rs485_transport.c
+    ../Bsp/Src/uart_dma_rx_buffer.c
+    ../Bsp/Src/usart2_rs485_adapter.c
+)
+target_include_directories(chassis_app_tests PRIVATE
+    stubs
+    ../Application/Inc
+    ../Services/Inc
+    ../Protocol/Inc
+    ../Bsp/Inc
+)
+target_compile_features(chassis_app_tests PRIVATE c_std_11)
+target_compile_options(chassis_app_tests PRIVATE -Wall -Wextra -Werror -pedantic)
+add_test(NAME chassis_app COMMAND chassis_app_tests)
+
 add_executable(rc_input_tests
     test_rc_input.c
     ../Services/Src/rc_input.c

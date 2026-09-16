@@ -10,6 +10,7 @@ static HAL_StatusTypeDef receive_result = HAL_OK;
 static HAL_StatusTypeDef stop_result = HAL_OK;
 static unsigned receive_calls;
 static unsigned stop_calls;
+static unsigned transmit_calls;
 
 #define CHECK(condition)                                                                    \
     do                                                                                      \
@@ -37,6 +38,17 @@ HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *uart)
     CHECK(uart == &huart1);
     ++stop_calls;
     return stop_result;
+}
+
+HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *uart,
+                                        const uint8_t *data,
+                                        uint16_t size)
+{
+    CHECK(uart == &huart1);
+    CHECK(data != NULL);
+    CHECK(size == 5u);
+    ++transmit_calls;
+    return HAL_OK;
 }
 
 int main(void)
@@ -102,7 +114,18 @@ int main(void)
     CHECK(transport.stats.restart_failures == 1u);
     CHECK(stop_calls == 7u);
 
+    receive_result = HAL_OK;
+    CHECK(jetson_uart_transport_reset(&transport));
+    CHECK(jetson_uart_transport_stop(&transport));
+    CHECK(transport.state == JETSON_UART_STOPPED);
+    CHECK(jetson_uart_transport_start(&transport, &parser));
+
+    CHECK(jetson_uart_transport_send_async(&transport, frame, sizeof(frame)));
     CHECK(!jetson_uart_transport_send_async(&transport, frame, sizeof(frame)));
+    jetson_uart_transport_dispatch_tx_complete();
+    jetson_uart_transport_poll(&transport, 7u);
+    CHECK(jetson_uart_transport_send_async(&transport, frame, sizeof(frame)));
+    CHECK(transmit_calls == 2u);
     puts("jetson_uart_transport test passed");
     return 0;
 }

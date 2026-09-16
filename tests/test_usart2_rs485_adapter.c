@@ -18,6 +18,7 @@ static unsigned transmit_calls;
 static unsigned disable_ht_calls;
 static unsigned jetson_rx_events;
 static unsigned jetson_errors;
+static unsigned jetson_tx_events;
 static uint32_t interrupt_mask;
 static bool hal_contract_failed;
 
@@ -156,6 +157,11 @@ void jetson_uart_transport_dispatch_uart_error(void)
     ++jetson_errors;
 }
 
+void jetson_uart_transport_dispatch_tx_complete(void)
+{
+    ++jetson_tx_events;
+}
+
 static uint16_t crc16(const uint8_t *data, size_t length)
 {
     return modbus_rtu_crc16(data, length);
@@ -181,6 +187,7 @@ static void reset_hal(void)
     disable_ht_calls = 0u;
     jetson_rx_events = 0u;
     jetson_errors = 0u;
+    jetson_tx_events = 0u;
     interrupt_mask = 0u;
     hal_contract_failed = false;
     (void)memset(&huart1, 0, sizeof(huart1));
@@ -305,6 +312,7 @@ static bool test_invalid_crc_then_valid_response(void)
     usart2_rs485_adapter_poll(&adapter, 4u);
     CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_COMPLETE);
     CHECK(adapter.stats.invalid_frames == 1u);
+    CHECK(adapter.stats.crc_errors == 1u);
     CHECK(adapter.stats.accepted_frames == 1u);
     CHECK(usart2_rs485_adapter_stop(&adapter));
     return true;
@@ -368,6 +376,33 @@ static bool test_uart_error_is_deferred_and_recovers(void)
     return true;
 }
 
+static bool test_tx_dma_error_is_counted_and_recovers(void)
+{
+    usart2_rs485_adapter_t adapter;
+    rs485_transport_t transport;
+    mssd_driver_t driver;
+    DMA_HandleTypeDef rx_dma = {0};
+    DMA_HandleTypeDef tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+
+    CHECK(setup(&adapter, &transport, &driver, &rx_dma, &tx_dma, &de_port));
+    CHECK(mssd_driver_request_stop(&driver,
+                                   MSSD_CHANNEL_RIGHT,
+                                   MSSD_STOP_NORMAL,
+                                   0u) == MSSD_REQUEST_ACCEPTED);
+    usart2_rs485_adapter_poll(&adapter, 0u);
+    CHECK(transport.state == RS485_DMA_TX);
+    tx_dma.error = 1u;
+    usart2_rs485_adapter_dispatch_tx_dma_irq(&tx_dma);
+    usart2_rs485_adapter_poll(&adapter, 1u);
+    CHECK(adapter.stats.dma_errors == 1u);
+    CHECK(adapter.stats.uart_errors == 1u);
+    CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_FAILED);
+    CHECK(de_port.last_state == GPIO_PIN_RESET);
+    CHECK(usart2_rs485_adapter_stop(&adapter));
+    return true;
+}
+
 static bool test_usart1_callbacks_are_isolated(void)
 {
     usart2_rs485_adapter_t adapter;
@@ -383,6 +418,7 @@ static bool test_usart1_callbacks_are_isolated(void)
     HAL_UART_TxCpltCallback(&huart1);
     CHECK(jetson_rx_events == 1u);
     CHECK(jetson_errors == 1u);
+    CHECK(jetson_tx_events == 1u);
     CHECK(adapter.stats.rx_events == 0u);
     CHECK(adapter.stats.uart_errors == 0u);
     CHECK(adapter.stats.uart_tc_events == 0u);
@@ -491,6 +527,7 @@ int main(void)
     RUN(test_invalid_crc_then_valid_response);
     RUN(test_overflow_forms_error_and_recovers_rx);
     RUN(test_uart_error_is_deferred_and_recovers);
+    RUN(test_tx_dma_error_is_counted_and_recovers);
     RUN(test_usart1_callbacks_are_isolated);
     RUN(test_explicit_reset_clears_partial_data);
     RUN(test_transaction_end_discards_residual_bytes);

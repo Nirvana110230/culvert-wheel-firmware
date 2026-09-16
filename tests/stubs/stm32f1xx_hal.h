@@ -50,6 +50,7 @@ HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *uart,
                                                uint16_t size);
 HAL_StatusTypeDef HAL_UART_AbortReceive(UART_HandleTypeDef *uart);
 HAL_StatusTypeDef HAL_UART_AbortTransmit(UART_HandleTypeDef *uart);
+HAL_StatusTypeDef HAL_UART_DMAStop(UART_HandleTypeDef *uart);
 HAL_StatusTypeDef HAL_UART_Transmit_DMA(UART_HandleTypeDef *uart,
                                         const uint8_t *data,
                                         uint16_t size);

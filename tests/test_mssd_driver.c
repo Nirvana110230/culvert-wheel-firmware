@@ -830,6 +830,38 @@ static bool test_read_retry_reuses_the_exact_request_and_stops_at_limit(void)
     return true;
 }
 
+static bool test_active_transaction_can_be_cancelled_for_safety(void)
+{
+    uint8_t right_response[8];
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    mssd_transaction_result_t result;
+    const mssd_driver_config_t config = mssd_driver_default_config();
+
+    setup(&driver, &transport, &mock, config);
+    CHECK(confirm_configuration(&driver, &transport, &mock, 0u));
+    mssd_driver_set_motion_authorized(&driver, true);
+    CHECK(mssd_driver_request_target_pair(&driver, 100, 200, 10u) ==
+          MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 10u));
+    (void)make_write_response(&transport, right_response);
+    CHECK(mssd_driver_on_response(&driver, right_response,
+                                  sizeof(right_response), 14u) ==
+          MSSD_RESPONSE_ACCEPTED);
+    CHECK(driver.current_channel == MSSD_CHANNEL_LEFT);
+    CHECK(mssd_driver_abort_for_safety(&driver, 15u));
+    CHECK(transport.state == RS485_ERROR);
+    CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_PARTIAL_COMMIT);
+    result = mssd_driver_get_result(&driver);
+    CHECK(result.right == MSSD_SIDE_SUCCEEDED);
+    CHECK(result.left == MSSD_SIDE_FAILED);
+    CHECK(result.completion == MSSD_COMPLETION_PARTIAL_COMMIT);
+    CHECK(mssd_driver_acknowledge(&driver, 16u));
+    CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_IDLE);
+    return true;
+}
+
 int main(void)
 {
     RUN(test_init_is_software_only_and_defaults_are_safe);
@@ -850,6 +882,7 @@ int main(void)
     RUN(test_public_writes_never_cross_control_register_block);
     RUN(test_read_retry_limit_is_bounded_and_writes_never_retry);
     RUN(test_read_retry_reuses_the_exact_request_and_stops_at_limit);
+    RUN(test_active_transaction_can_be_cancelled_for_safety);
     printf("all %u mssd_driver tests passed\n", tests_run);
     return 0;
 }
