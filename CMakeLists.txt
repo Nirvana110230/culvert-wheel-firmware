@@ -47,6 +47,10 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/Src/app_state_machine.c
     Bsp/Src/rc_capture.c
     Services/Src/rc_input.c
+    Protocol/Src/jetson_protocol.c
+    Protocol/Src/modbus_rtu.c
+    Bsp/Src/jetson_uart_transport.c
+    Bsp/Src/rs485_transport.c
 )
 
 set_source_files_properties(
@@ -57,6 +61,10 @@ set_source_files_properties(
 set_source_files_properties(
     Bsp/Src/rc_capture.c
     Services/Src/rc_input.c
+    Protocol/Src/jetson_protocol.c
+    Protocol/Src/modbus_rtu.c
+    Bsp/Src/jetson_uart_transport.c
+    Bsp/Src/rs485_transport.c
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Werror"
 )
 
@@ -65,6 +73,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     Application/Inc
     Bsp/Inc
     Services/Inc
+    Protocol/Inc
 )
 
 # Add project symbols (macros)
