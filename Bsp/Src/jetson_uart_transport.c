@@ -184,17 +184,17 @@ bool jetson_uart_transport_send_async(jetson_uart_transport_t *transport,
     return false;
 }
 
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *uart, uint16_t size)
+void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position)
 {
-    if ((uart == &huart1) && (active_transport != NULL))
+    if (active_transport != NULL)
     {
-        jetson_uart_transport_on_rx_event(active_transport, size);
+        jetson_uart_transport_on_rx_event(active_transport, dma_position);
     }
 }
 
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *uart)
+void jetson_uart_transport_dispatch_uart_error(void)
 {
-    if ((uart == &huart1) && (active_transport != NULL))
+    if (active_transport != NULL)
     {
         jetson_uart_transport_on_uart_error(active_transport);
     }

@@ -1,20 +1,10 @@
 #ifndef TEST_USART_H
 #define TEST_USART_H
 
-#include <stdint.h>
-
-typedef enum
-{
-    HAL_OK = 0,
-    HAL_ERROR = 1
-} HAL_StatusTypeDef;
-
-typedef struct
-{
-    uint32_t unused;
-} UART_HandleTypeDef;
+#include "stm32f1xx_hal.h"
 
 extern UART_HandleTypeDef huart1;
+extern UART_HandleTypeDef huart2;
 
 HAL_StatusTypeDef HAL_UARTEx_ReceiveToIdle_DMA(UART_HandleTypeDef *uart,
                                                uint8_t *data,

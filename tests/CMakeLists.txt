@@ -89,6 +89,54 @@ target_compile_options(mssd_driver_tests PRIVATE
 
 add_test(NAME mssd_driver COMMAND mssd_driver_tests)
 
+add_executable(modbus_rx_assembler_tests
+    test_modbus_rx_assembler.c
+    ../Protocol/Src/modbus_rx_assembler.c
+    ../Bsp/Src/uart_dma_rx_buffer.c
+)
+
+target_include_directories(modbus_rx_assembler_tests PRIVATE
+    ../Protocol/Inc
+    ../Bsp/Inc
+)
+
+target_compile_features(modbus_rx_assembler_tests PRIVATE c_std_11)
+target_compile_options(modbus_rx_assembler_tests PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+    -pedantic
+)
+
+add_test(NAME modbus_rx_assembler COMMAND modbus_rx_assembler_tests)
+
+add_executable(usart2_rs485_adapter_tests
+    test_usart2_rs485_adapter.c
+    ../Bsp/Src/usart2_rs485_adapter.c
+    ../Bsp/Src/uart_dma_rx_buffer.c
+    ../Bsp/Src/uart_hal_callbacks.c
+    ../Protocol/Src/modbus_rx_assembler.c
+    ../Protocol/Src/mssd_driver.c
+    ../Protocol/Src/modbus_rtu.c
+    ../Bsp/Src/rs485_transport.c
+)
+
+target_include_directories(usart2_rs485_adapter_tests PRIVATE
+    stubs
+    ../Bsp/Inc
+    ../Protocol/Inc
+)
+
+target_compile_features(usart2_rs485_adapter_tests PRIVATE c_std_11)
+target_compile_options(usart2_rs485_adapter_tests PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+    -pedantic
+)
+
+add_test(NAME usart2_rs485_adapter COMMAND usart2_rs485_adapter_tests)
+
 add_executable(jetson_uart_transport_tests
     test_jetson_uart_transport.c
     ../Bsp/Src/jetson_uart_transport.c

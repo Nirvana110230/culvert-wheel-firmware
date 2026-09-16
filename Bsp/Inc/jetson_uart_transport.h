@@ -55,6 +55,10 @@ void jetson_uart_transport_on_rx_event(jetson_uart_transport_t *transport,
                                        uint16_t dma_position);
 void jetson_uart_transport_on_uart_error(jetson_uart_transport_t *transport);
 
+/* Called only by the shared HAL callback dispatcher. */
+void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position);
+void jetson_uart_transport_dispatch_uart_error(void);
+
 /* Deliberately unavailable in this offline phase; this function always returns false. */
 bool jetson_uart_transport_send_async(jetson_uart_transport_t *transport,
                                       const uint8_t *data,
