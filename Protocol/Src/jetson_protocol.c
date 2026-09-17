@@ -25,6 +25,7 @@ static bool payload_length_is_valid(uint8_t function, uint8_t length)
         case JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK:
             return (length == 1u) || (length == 2u);
         case JETSON_FUNC_LEGACY_INSPECT_CTRL:
+            return (length == 1u) || (length == 2u);
         case JETSON_FUNC_LEGACY_EMERGENCY:
         case JETSON_FUNC_LEGACY_MODE_REPORT:
             return length == 1u;
@@ -217,6 +218,40 @@ bool jetson_protocol_decode_motion(const jetson_frame_t *frame,
     motion->vy = read_i16_le(&frame->payload[3]);
     motion->vz = read_i16_le(&frame->payload[5]);
     motion->timestamp_ms = frame->timestamp_ms;
+    return true;
+}
+
+bool jetson_protocol_decode_self_check(const jetson_frame_t *frame,
+                                       bool *passed,
+                                       uint8_t *error_code)
+{
+    uint8_t error;
+
+    if ((frame == NULL) || (passed == NULL) || (error_code == NULL) ||
+        (frame->function != JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK) ||
+        (frame->payload_length != 2u))
+    {
+        return false;
+    }
+    error = frame->payload[1];
+    *error_code = error;
+    *passed = (frame->payload[0] == 1u) && (error == 0u);
+    return (frame->payload[0] <= 1u);
+}
+
+bool jetson_protocol_decode_legacy_inspect_reply(const jetson_frame_t *frame,
+                                                 uint8_t *command,
+                                                 bool *accepted)
+{
+    if ((frame == NULL) || (command == NULL) || (accepted == NULL) ||
+        (frame->function != JETSON_FUNC_LEGACY_INSPECT_CTRL) ||
+        (frame->payload_length != 2u) ||
+        (frame->payload[0] > 1u) || (frame->payload[1] > 1u))
+    {
+        return false;
+    }
+    *command = frame->payload[0];
+    *accepted = (frame->payload[1] == 1u);
     return true;
 }
 

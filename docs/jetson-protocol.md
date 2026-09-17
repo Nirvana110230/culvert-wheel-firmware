@@ -3,9 +3,9 @@
 ## 兼容性证据范围
 
 本定义直接依据旧 STM32 工程的 `User/protocol.c`、`User/protocol.h`、
-`User/main.c`、`Drivers/SYSTEM/usart` 和 `Rosmaster_Lib.py` 整理。
-当前工作区未找到 Jetson 端 `stm32_node.cpp`，因此这里只能确认与旧 STM32
-工程的收发实现兼容，不能宣称已经验证真实 Jetson 部署兼容性。
+`User/main.c`、`Drivers/SYSTEM/usart`、`Rosmaster_Lib.py`，以及部署快照中的
+`stm32_bridge/include/stm32_bridge/protocol.hpp`、`src/protocol.cpp` 和
+`src/stm32_node.cpp` 整理。源码一致性不等于串口实机验收。
 
 ## 旧帧格式
 
@@ -72,8 +72,8 @@ FF FB 04 A5 01 AA
 |---|---|---:|---|
 | `0x12` | MOTION | 7 | 旧协议 |
 | `0x50` | REQUEST_DATA | 2 | 旧协议，`LEN=5` |
-| `0x51` | VERSION / SELF_CHECK | 1 或 2 | 旧协议冲突兼容入口 |
-| `0xA3` | LEGACY_INSPECT_CTRL | 1 | 旧协议，`LEN=4` |
+| `0x51` | VERSION / SELF_CHECK | 1 或 2 | 流式解析兼容旧帧；应用自检只接受请求窗口内两字节回复 |
+| `0xA3` | LEGACY_INSPECT_CTRL | 1或2 | STM32命令1字节；Jetson ACK为`cmd,ok`两字节 |
 | `0xA4` | LEGACY_EMERGENCY | 1 | 旧协议，`LEN=4` |
 | `0xA5` | LEGACY_MODE_REPORT | 1 | 旧协议，`LEN=4` |
 | `0xB0` | INSPECT_REQUEST | 0 | 新分配 |
@@ -84,8 +84,27 @@ FF FB 04 A5 01 AA
 | `0xB5` | STATUS | 4 | 新分配，载荷语义待业务层定义 |
 | `0xB6` | HEARTBEAT | 1 | 新分配，载荷语义待业务层定义 |
 
-旧代码扫描未发现 `0xB0`～`0xB6` 被占用。`INSPECT_REQUEST`、接受、拒绝、完成和
-取消已接入组合层；STATUS和HEARTBEAT载荷语义仍未接入业务层。
+旧代码扫描未发现 `0xB0`～`0xB6` 被占用。当前部署桥只实现`0x51`、`0xA3`～
+`0xA5`和`0x12`，所以组合层使用旧兼容入口；`B3/B4`仍可作为未来Jetson主动完成/
+取消入口。STATUS和HEARTBEAT载荷语义仍未接入业务层。
+
+部署桥ACK黄金向量：
+
+```text
+INSPECT start accepted: FF FC 05 A3 01 01 AA
+INSPECT start rejected: FF FC 05 A3 01 00 A9
+INSPECT stop accepted:  FF FC 05 A3 00 01 A9
+```
+
+STM32以500 ms周期非阻塞发送自检请求，直到收到请求窗口内的两字节回复；`0x51`
+仍与历史VERSION存在无法从字节消除的歧义，不能视为强认证或强新鲜度证明。巡检请求、
+停止、急停和模式报告在TX DMA忙时保持锁存，只有TX完成才消费；UART错误会保留重试，
+其中急停和巡检停止优先。Jetson接受巡检时先建立
+一条新鲜零速命令作为首帧等待窗，旧Nav2速度不会被恢复。
+
+当前部署桥还有两项需在Jetson端修复的闭环限制：它在非STANDBY时也会对巡检开始回复
+成功；并且`self_check_done_`置位后不再响应STM32复位后的新自检请求。固件不能从单端
+安全弥补这两项语义缺陷。
 
 ## 流式解析与容量
 
@@ -106,5 +125,5 @@ FF FB 04 A5 01 AA
 - DMA 停止或重启失败会计数并保持 STOPPED，不会伪装为恢复成功。
 - 若中断被阻塞到 DMA 在两次可见回调之间绕回超过一整圈，硬件不提供可恢复的圈数；
   该情况只能通过保证 HT/TC 中断及时服务及后续硬件压力测试确认。
-- `jetson_uart_transport_send_async()` 复制一个不超过37字节的帧并启动USART1 TX DMA；同一时刻只允许一个发送，完成回调只发布事件，由前台清除忙状态。
+- `jetson_uart_transport_send_async()` 复制一个不超过37字节的帧并启动USART1 TX DMA；同一时刻只允许一个发送，完成回调只发布事件，由前台确认完成后消费应用outbox。
 - 传输层已在 `main()` 中启动。当前只会因状态机动作发送巡检请求/取消帧，不发送MSSD速度；尚未进行真实Jetson兼容性验证。

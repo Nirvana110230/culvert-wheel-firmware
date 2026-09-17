@@ -9,6 +9,8 @@
 static const uint32_t DEFAULT_STATUS_POLL_PERIOD_MS = 100u;
 static const uint32_t DEFAULT_TARGET_REFRESH_PERIOD_MS = 50u;
 static const uint32_t DEFAULT_INSPECT_REQUEST_TIMEOUT_MS = 1000u;
+static const uint32_t DEFAULT_SELF_CHECK_PERIOD_MS = 500u;
+static const uint32_t DEFAULT_EMERGENCY_BEEP_HALF_PERIOD_MS = 200u;
 
 static bool time_reached(uint32_t now_ms, uint32_t deadline_ms)
 {
@@ -29,6 +31,11 @@ chassis_app_config_t chassis_app_default_config(void)
     config.status_poll_period_ms = DEFAULT_STATUS_POLL_PERIOD_MS;
     config.target_refresh_period_ms = DEFAULT_TARGET_REFRESH_PERIOD_MS;
     config.inspect_request_timeout_ms = DEFAULT_INSPECT_REQUEST_TIMEOUT_MS;
+    config.jetson_self_check_period_ms = DEFAULT_SELF_CHECK_PERIOD_MS;
+    config.emergency_beep_half_period_ms =
+        DEFAULT_EMERGENCY_BEEP_HALF_PERIOD_MS;
+    config.require_jetson_self_check = true;
+    config.beep_active_high = true;
     return config;
 }
 
@@ -41,6 +48,8 @@ static bool config_is_valid(const chassis_app_config_t *config)
            (config->status_poll_period_ms != 0u) &&
            (config->target_refresh_period_ms != 0u) &&
            (config->inspect_request_timeout_ms != 0u) &&
+           (config->jetson_self_check_period_ms != 0u) &&
+           (config->emergency_beep_half_period_ms != 0u) &&
            (!config->rc_mapping_verified ||
             ((config->rc_max_linear_mm_s > 0.0) &&
              isfinite(config->rc_max_linear_mm_s) &&
@@ -95,6 +104,21 @@ bool chassis_app_init(chassis_app_t *app,
     return true;
 }
 
+bool chassis_app_attach_status_outputs(chassis_app_t *app,
+                                       GPIO_TypeDef *beep_port,
+                                       uint16_t beep_pin)
+{
+    if (app == NULL)
+    {
+        return false;
+    }
+    return board_status_outputs_init(&app->status_outputs,
+                                     beep_port,
+                                     beep_pin,
+                                     app->config.beep_active_high,
+                                     app->config.emergency_beep_half_period_ms);
+}
+
 bool chassis_app_start(chassis_app_t *app)
 {
     if ((app == NULL) || app->started ||
@@ -126,6 +150,7 @@ bool chassis_app_stop(chassis_app_t *app)
         return false;
     }
     rc_capture_stop();
+    board_status_outputs_stop(&app->status_outputs);
     if (!jetson_uart_transport_stop(&app->jetson_transport))
     {
         success = false;
@@ -139,8 +164,9 @@ bool chassis_app_stop(chassis_app_t *app)
     return success;
 }
 
-static void apply_app_event(chassis_app_t *app, app_event_t event,
-                            uint32_t now_ms)
+static app_transition_result_t apply_app_event(chassis_app_t *app,
+                                               app_event_t event,
+                                               uint32_t now_ms)
 {
     const app_transition_result_t result =
         app_state_machine_transition(app->machine, event);
@@ -153,25 +179,135 @@ static void apply_app_event(chassis_app_t *app, app_event_t event,
     {
         app->inspect_request_active = true;
         app->inspect_request_started_ms = now_ms;
-        app->pending_jetson_function = JETSON_FUNC_INSPECT_REQUEST;
+        app->jetson_outbox.inspect_start_pending = true;
     }
     if ((result.actions & APP_ACTION_CANCEL_INSPECTION) != 0u)
     {
         app->inspect_request_active = false;
-        app->pending_jetson_function = JETSON_FUNC_INSPECT_CANCELLED;
+        app->jetson_outbox.inspect_start_pending = false;
+        app->jetson_outbox.inspect_stop_pending = true;
     }
+    return result;
 }
 
-static void service_jetson_tx(chassis_app_t *app)
+static bool select_jetson_tx(chassis_app_t *app,
+                             uint8_t *function,
+                             uint8_t *payload,
+                             bool **pending,
+                             chassis_jetson_tx_kind_t *kind)
+{
+    if (app->jetson_outbox.emergency_pending)
+    {
+        *function = JETSON_FUNC_LEGACY_EMERGENCY;
+        *payload = app->jetson_outbox.emergency_value;
+        *pending = &app->jetson_outbox.emergency_pending;
+        *kind = CHASSIS_JETSON_TX_EMERGENCY;
+    }
+    else if (app->jetson_outbox.inspect_stop_pending)
+    {
+        *function = JETSON_FUNC_LEGACY_INSPECT_CTRL;
+        *payload = 0u;
+        *pending = &app->jetson_outbox.inspect_stop_pending;
+        *kind = CHASSIS_JETSON_TX_INSPECT_STOP;
+    }
+    else if (app->jetson_outbox.mode_pending)
+    {
+        *function = JETSON_FUNC_LEGACY_MODE_REPORT;
+        *payload = app->jetson_outbox.mode_value;
+        *pending = &app->jetson_outbox.mode_pending;
+        *kind = CHASSIS_JETSON_TX_MODE;
+    }
+    else if (app->jetson_outbox.inspect_start_pending)
+    {
+        *function = JETSON_FUNC_LEGACY_INSPECT_CTRL;
+        *payload = 1u;
+        *pending = &app->jetson_outbox.inspect_start_pending;
+        *kind = CHASSIS_JETSON_TX_INSPECT_START;
+    }
+    else if (app->jetson_outbox.self_check_pending)
+    {
+        *function = JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK;
+        *payload = 0u;
+        *pending = &app->jetson_outbox.self_check_pending;
+        *kind = CHASSIS_JETSON_TX_SELF_CHECK;
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+static void complete_jetson_tx(chassis_app_t *app)
+{
+    bool *pending = NULL;
+    uint8_t current_payload = app->jetson_tx_payload;
+
+    if (!app->jetson_tx_inflight)
+    {
+        return;
+    }
+    if (app->jetson_transport.stats.tx_completions ==
+        app->jetson_tx_completion_snapshot)
+    {
+        if (!app->jetson_transport.tx_busy)
+        {
+            if (app->jetson_tx_kind == CHASSIS_JETSON_TX_SELF_CHECK)
+            {
+                app->jetson_self_check_request_outstanding = false;
+            }
+            app->jetson_tx_inflight = false;
+            app->jetson_tx_kind = CHASSIS_JETSON_TX_NONE;
+        }
+        return;
+    }
+
+    switch (app->jetson_tx_kind)
+    {
+        case CHASSIS_JETSON_TX_SELF_CHECK:
+            pending = &app->jetson_outbox.self_check_pending;
+            break;
+        case CHASSIS_JETSON_TX_INSPECT_START:
+            pending = &app->jetson_outbox.inspect_start_pending;
+            break;
+        case CHASSIS_JETSON_TX_INSPECT_STOP:
+            pending = &app->jetson_outbox.inspect_stop_pending;
+            break;
+        case CHASSIS_JETSON_TX_EMERGENCY:
+            pending = &app->jetson_outbox.emergency_pending;
+            current_payload = app->jetson_outbox.emergency_value;
+            break;
+        case CHASSIS_JETSON_TX_MODE:
+            pending = &app->jetson_outbox.mode_pending;
+            current_payload = app->jetson_outbox.mode_value;
+            break;
+        default:
+            break;
+    }
+    if ((pending != NULL) && (current_payload == app->jetson_tx_payload))
+    {
+        *pending = false;
+    }
+    app->jetson_tx_inflight = false;
+    app->jetson_tx_kind = CHASSIS_JETSON_TX_NONE;
+}
+
+static void service_jetson_tx(chassis_app_t *app, uint32_t now_ms)
 {
     uint8_t frame[JETSON_PROTOCOL_MAX_FRAME_SIZE];
+    uint8_t function;
+    uint8_t payload;
+    bool *pending;
+    chassis_jetson_tx_kind_t kind;
     size_t length = 0u;
 
-    if ((app->pending_jetson_function == 0u) ||
+    complete_jetson_tx(app);
+    if (app->jetson_tx_inflight ||
+        !select_jetson_tx(app, &function, &payload, &pending, &kind) ||
         !jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
-                               app->pending_jetson_function,
-                               NULL,
-                               0u,
+                               function,
+                               &payload,
+                               1u,
                                frame,
                                sizeof(frame),
                                &length))
@@ -182,7 +318,62 @@ static void service_jetson_tx(chassis_app_t *app)
                                          frame,
                                          length))
     {
-        app->pending_jetson_function = 0u;
+        (void)pending;
+        app->jetson_tx_inflight = true;
+        app->jetson_tx_kind = kind;
+        app->jetson_tx_payload = payload;
+        app->jetson_tx_completion_snapshot =
+            app->jetson_transport.stats.tx_completions;
+        if (function == JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK)
+        {
+            app->jetson_self_check_request_outstanding = true;
+            app->next_self_check_request_ms =
+                now_ms + app->config.jetson_self_check_period_ms;
+        }
+    }
+}
+
+static void latch_rc_report(chassis_app_t *app,
+                            app_event_t event,
+                            app_state_machine_t before)
+{
+    const app_state_machine_t after = app->machine;
+
+    if ((event == APP_EVENT_RC_EMERGENCY_ASSERTED) &&
+        (before.state != APP_STATE_EMERGENCY) &&
+        (after.state == APP_STATE_EMERGENCY))
+    {
+        app->jetson_outbox.emergency_pending = true;
+        app->jetson_outbox.emergency_value = 1u;
+    }
+    else if ((event == APP_EVENT_RC_EMERGENCY_RELEASED) &&
+             (before.state == APP_STATE_EMERGENCY) &&
+             (after.state != APP_STATE_EMERGENCY))
+    {
+        app->jetson_outbox.emergency_pending = true;
+        app->jetson_outbox.emergency_value = 0u;
+        if (after.selected_mode != APP_MODE_SELECTION_INVALID)
+        {
+            app->jetson_outbox.mode_pending = true;
+            app->jetson_outbox.mode_value =
+                (after.selected_mode == APP_MODE_SELECTION_REMOTE) ? 0u : 1u;
+        }
+    }
+    else if ((event == APP_EVENT_RC_SELECT_REMOTE) &&
+             (after.state != APP_STATE_EMERGENCY) &&
+             ((before.selected_mode != after.selected_mode) ||
+              (before.state != after.state)))
+    {
+        app->jetson_outbox.mode_pending = true;
+        app->jetson_outbox.mode_value = 0u;
+    }
+    else if ((event == APP_EVENT_RC_SELECT_STANDBY) &&
+             (after.state != APP_STATE_EMERGENCY) &&
+             ((before.selected_mode != after.selected_mode) ||
+              (before.state != after.state)))
+    {
+        app->jetson_outbox.mode_pending = true;
+        app->jetson_outbox.mode_value = 1u;
     }
 }
 
@@ -208,7 +399,15 @@ static void process_rc_events(chassis_app_t *app, uint32_t events,
     {
         if ((events & mappings[index].mask) != 0u)
         {
-            apply_app_event(app, mappings[index].event, now_ms);
+            const app_state_machine_t before = app->machine;
+
+            if ((mappings[index].event == APP_EVENT_RC_EMERGENCY_RELEASED) &&
+                !app->rc_input.snapshot.signal_valid)
+            {
+                continue;
+            }
+            (void)apply_app_event(app, mappings[index].event, now_ms);
+            latch_rc_report(app, mappings[index].event, before);
         }
     }
 }
@@ -216,18 +415,18 @@ static void process_rc_events(chassis_app_t *app, uint32_t events,
 static void drain_rc_capture(chassis_app_t *app, uint32_t now_ms)
 {
     rc_capture_sample_t sample;
-    uint32_t events = RC_INPUT_EVENT_NONE;
     rc_input_snapshot_t snapshot;
 
     while (rc_capture_take_sample(&sample))
     {
-        events |= rc_input_process_sample(&app->rc_input,
-                                          sample.channel,
-                                          sample.pulse_us,
-                                          sample.timestamp_ms);
+        const uint32_t events = rc_input_process_sample(&app->rc_input,
+                                                        sample.channel,
+                                                        sample.pulse_us,
+                                                        sample.timestamp_ms);
+
+        process_rc_events(app, events, now_ms);
     }
-    events |= rc_input_poll(&app->rc_input, now_ms);
-    process_rc_events(app, events, now_ms);
+    process_rc_events(app, rc_input_poll(&app->rc_input, now_ms), now_ms);
     snapshot = rc_input_get_snapshot(&app->rc_input);
     if (app->config.rc_mapping_verified && snapshot.signal_valid)
     {
@@ -246,6 +445,10 @@ static void process_jetson_frame(chassis_app_t *app,
                                  uint32_t now_ms)
 {
     jetson_motion_frame_t motion;
+    uint8_t inspect_command;
+    uint8_t self_check_error;
+    bool inspect_accepted;
+    bool self_check_passed;
 
     if (jetson_protocol_decode_motion(frame, &motion))
     {
@@ -255,11 +458,58 @@ static void process_jetson_frame(chassis_app_t *app,
                                         motion.timestamp_ms);
         return;
     }
+    if ((app->machine.state == APP_STATE_BOOT_SAFE) &&
+        app->jetson_self_check_request_outstanding &&
+        jetson_protocol_decode_self_check(frame,
+                                          &self_check_passed,
+                                          &self_check_error))
+    {
+        app->jetson_self_check_received = true;
+        app->jetson_self_check_passed = self_check_passed;
+        app->jetson_self_check_error = self_check_error;
+        app->jetson_outbox.self_check_pending = false;
+        app->jetson_self_check_request_outstanding = false;
+        return;
+    }
+    if (jetson_protocol_decode_legacy_inspect_reply(frame,
+                                                    &inspect_command,
+                                                    &inspect_accepted))
+    {
+        if (inspect_command == 1u)
+        {
+            app->inspect_request_active = false;
+            apply_app_event(app,
+                            inspect_accepted ? APP_EVENT_JETSON_INSPECT_ACCEPTED :
+                                               APP_EVENT_JETSON_INSPECT_REJECTED,
+                            now_ms);
+            if (inspect_accepted &&
+                (app->machine.state == APP_STATE_INSPECTING))
+            {
+                motion_supervisor_submit_jetson(&app->supervisor,
+                                                0.0,
+                                                0.0,
+                                                now_ms);
+            }
+        }
+        else if (inspect_accepted)
+        {
+            app->inspect_request_active = false;
+            apply_app_event(app, APP_EVENT_JETSON_INSPECT_CANCELLED, now_ms);
+        }
+        return;
+    }
     switch (frame->function)
     {
         case JETSON_FUNC_INSPECT_ACCEPTED:
             app->inspect_request_active = false;
             apply_app_event(app, APP_EVENT_JETSON_INSPECT_ACCEPTED, now_ms);
+            if (app->machine.state == APP_STATE_INSPECTING)
+            {
+                motion_supervisor_submit_jetson(&app->supervisor,
+                                                0.0,
+                                                0.0,
+                                                now_ms);
+            }
             break;
         case JETSON_FUNC_INSPECT_REJECTED:
             app->inspect_request_active = false;
@@ -338,6 +588,8 @@ static void advance_self_check(chassis_app_t *app, uint32_t now_ms)
                                      app->supervisor.left_feedback_valid;
     const bool motor_fault = (app->supervisor.right_fault_code != 0u) ||
                              (app->supervisor.left_fault_code != 0u);
+    const bool jetson_ready = !app->config.require_jetson_self_check ||
+                              app->jetson_self_check_passed;
 
     if (app->self_check_completed ||
         (app->machine.state != APP_STATE_BOOT_SAFE))
@@ -350,6 +602,13 @@ static void advance_self_check(chassis_app_t *app, uint32_t now_ms)
         app->self_check_completed = true;
         apply_app_event(app, APP_EVENT_SELF_CHECK_FAILED, now_ms);
     }
+    else if (app->config.require_jetson_self_check &&
+             app->jetson_self_check_received &&
+             !app->jetson_self_check_passed)
+    {
+        app->self_check_completed = true;
+        apply_app_event(app, APP_EVENT_SELF_CHECK_FAILED, now_ms);
+    }
     else if (both_feedback_valid && motor_fault)
     {
         app->self_check_completed = true;
@@ -357,10 +616,23 @@ static void advance_self_check(chassis_app_t *app, uint32_t now_ms)
     }
     else if (app->supervisor.mssd_configuration_matches &&
              both_feedback_valid &&
+             jetson_ready &&
              (app->machine.selected_mode != APP_MODE_SELECTION_INVALID))
     {
         app->self_check_completed = true;
         apply_app_event(app, APP_EVENT_SELF_CHECK_PASSED, now_ms);
+    }
+}
+
+static void schedule_self_check(chassis_app_t *app, uint32_t now_ms)
+{
+    if (app->config.require_jetson_self_check &&
+        !app->jetson_self_check_received &&
+        !app->jetson_self_check_request_outstanding &&
+        (app->machine.state == APP_STATE_BOOT_SAFE) &&
+        time_reached(now_ms, app->next_self_check_request_ms))
+    {
+        app->jetson_outbox.self_check_pending = true;
     }
 }
 
@@ -593,11 +865,16 @@ static void update_diagnostics(chassis_app_t *app,
     app->diagnostics.dma_errors = app->usart2_adapter.stats.dma_errors;
     app->diagnostics.rx_overflows = app->usart2_adapter.stats.rx_overruns +
         app->jetson_transport.stats.software_overruns;
+    app->diagnostics.jetson_self_check_received =
+        app->jetson_self_check_received;
+    app->diagnostics.jetson_self_check_passed = app->jetson_self_check_passed;
+    app->diagnostics.jetson_self_check_error = app->jetson_self_check_error;
 }
 
 void chassis_app_poll(chassis_app_t *app, uint32_t now_ms)
 {
     motion_decision_t decision;
+    bool jetson_motion_timed_out = false;
 
     if ((app == NULL) || !app->started)
     {
@@ -605,7 +882,8 @@ void chassis_app_poll(chassis_app_t *app, uint32_t now_ms)
     }
     drain_rc_capture(app, now_ms);
     drain_jetson(app, now_ms);
-    service_jetson_tx(app);
+    schedule_self_check(app, now_ms);
+    service_jetson_tx(app, now_ms);
     usart2_rs485_adapter_poll(&app->usart2_adapter, now_ms);
     record_terminal_transaction(app, now_ms);
     update_supervisor_feedback(app);
@@ -621,10 +899,16 @@ void chassis_app_poll(chassis_app_t *app, uint32_t now_ms)
     if ((decision.stop_reason == MOTION_STOP_JETSON_TIMEOUT) &&
         (app->machine.state == APP_STATE_INSPECTING))
     {
+        /* Preserve the timeout cause before the state transition becomes STANDBY. */
+        latch_safe_stop(app, &decision, now_ms);
+        jetson_motion_timed_out = true;
         apply_app_event(app, APP_EVENT_JETSON_MOTION_TIMEOUT, now_ms);
         decision = motion_supervisor_poll(&app->supervisor, now_ms);
     }
-    latch_safe_stop(app, &decision, now_ms);
+    if (!jetson_motion_timed_out)
+    {
+        latch_safe_stop(app, &decision, now_ms);
+    }
     mssd_driver_set_motion_authorized(&app->mssd, false);
     if ((app->startup_state != CHASSIS_APP_STARTUP_CONFIGURATION) ||
         (mssd_driver_get_state(&app->mssd) != MSSD_DRIVER_IDLE))
@@ -636,6 +920,9 @@ void chassis_app_poll(chassis_app_t *app, uint32_t now_ms)
         (void)schedule_startup_or_poll(app, now_ms);
     }
     update_diagnostics(app, &decision);
+    board_status_outputs_poll(&app->status_outputs,
+                              app->machine.state,
+                              now_ms);
 }
 
 bool chassis_app_get_diagnostics(const chassis_app_t *app,

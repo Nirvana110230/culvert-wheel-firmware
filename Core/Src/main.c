@@ -109,6 +109,9 @@ int main(void)
                          huart2.hdmatx,
                          RS485_DE_GPIO_Port,
                          RS485_DE_Pin) &&
+        chassis_app_attach_status_outputs(&chassis_app,
+                                          BEEP_GPIO_Port,
+                                          BEEP_Pin) &&
         chassis_app_start(&chassis_app);
   }
 

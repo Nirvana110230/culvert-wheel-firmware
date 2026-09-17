@@ -49,6 +49,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Application/Src/chassis_kinematics.c
     Application/Src/motion_supervisor.c
     Bsp/Src/rc_capture.c
+    Bsp/Src/board_status_outputs.c
     Services/Src/rc_input.c
     Protocol/Src/jetson_protocol.c
     Protocol/Src/modbus_rtu.c

@@ -78,9 +78,16 @@ static bool test_old_transmit_golden_frames(void)
     static const uint8_t inspect_payload[] = {0x01};
     static const uint8_t inspect_expected[] = {0xFF, 0xFB, 0x04, 0xA3,
                                                 0x01, 0xA8};
+    static const uint8_t inspect_stop_expected[] = {0xFF, 0xFB, 0x04, 0xA3,
+                                                     0x00, 0xA7};
     static const uint8_t emergency_expected[] = {0xFF, 0xFB, 0x04, 0xA4,
                                                   0x01, 0xA9};
+    static const uint8_t emergency_off_expected[] = {0xFF, 0xFB, 0x04, 0xA4,
+                                                      0x00, 0xA8};
     static const uint8_t mode_expected[] = {0xFF, 0xFB, 0x04, 0xA5, 0x01, 0xAA};
+    static const uint8_t mode_remote_expected[] = {0xFF, 0xFB, 0x04, 0xA5,
+                                                    0x00, 0xA9};
+    static const uint8_t zero_payload[] = {0x00};
     uint8_t output[16];
     size_t written;
 
@@ -103,6 +110,15 @@ static bool test_old_transmit_golden_frames(void)
     CHECK((written == sizeof(inspect_expected)) &&
           (memcmp(output, inspect_expected, written) == 0));
     CHECK(jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
+                                JETSON_FUNC_LEGACY_INSPECT_CTRL,
+                                zero_payload,
+                                sizeof(zero_payload),
+                                output,
+                                sizeof(output),
+                                &written));
+    CHECK((written == sizeof(inspect_stop_expected)) &&
+          (memcmp(output, inspect_stop_expected, written) == 0));
+    CHECK(jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
                                 JETSON_FUNC_LEGACY_EMERGENCY,
                                 inspect_payload,
                                 sizeof(inspect_payload),
@@ -112,6 +128,15 @@ static bool test_old_transmit_golden_frames(void)
     CHECK((written == sizeof(emergency_expected)) &&
           (memcmp(output, emergency_expected, written) == 0));
     CHECK(jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
+                                JETSON_FUNC_LEGACY_EMERGENCY,
+                                zero_payload,
+                                sizeof(zero_payload),
+                                output,
+                                sizeof(output),
+                                &written));
+    CHECK((written == sizeof(emergency_off_expected)) &&
+          (memcmp(output, emergency_off_expected, written) == 0));
+    CHECK(jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
                                 JETSON_FUNC_LEGACY_MODE_REPORT,
                                 inspect_payload,
                                 sizeof(inspect_payload),
@@ -120,6 +145,79 @@ static bool test_old_transmit_golden_frames(void)
                                 &written));
     CHECK((written == sizeof(mode_expected)) &&
           (memcmp(output, mode_expected, written) == 0));
+    CHECK(jetson_protocol_build(JETSON_PROTOCOL_TX_HEAD,
+                                JETSON_FUNC_LEGACY_MODE_REPORT,
+                                zero_payload,
+                                sizeof(zero_payload),
+                                output,
+                                sizeof(output),
+                                &written));
+    CHECK((written == sizeof(mode_remote_expected)) &&
+          (memcmp(output, mode_remote_expected, written) == 0));
+    return true;
+}
+
+static bool test_deployed_bridge_self_check_and_inspect_ack_frames(void)
+{
+    static const uint8_t self_check[] = {
+        0xFFu, 0xFCu, 0x05u, 0x51u, 0x01u, 0x00u, 0x57u};
+    static const uint8_t inspect_accepted[] = {
+        0xFFu, 0xFCu, 0x05u, 0xA3u, 0x01u, 0x01u, 0xAAu};
+    static const uint8_t inspect_rejected[] = {
+        0xFFu, 0xFCu, 0x05u, 0xA3u, 0x01u, 0x00u, 0xA9u};
+    static const uint8_t inspect_stopped[] = {
+        0xFFu, 0xFCu, 0x05u, 0xA3u, 0x00u, 0x01u, 0xA9u};
+    jetson_protocol_t parser;
+    jetson_frame_t frame;
+    bool passed;
+    bool accepted;
+    uint8_t error_code;
+    uint8_t command;
+
+    jetson_protocol_init(&parser);
+    jetson_protocol_feed(&parser, self_check, sizeof(self_check), 1u);
+    CHECK(jetson_protocol_take_frame(&parser, &frame));
+    CHECK(jetson_protocol_decode_self_check(&frame, &passed, &error_code));
+    CHECK(passed && (error_code == 0u));
+
+    jetson_protocol_feed(&parser, inspect_accepted,
+                         sizeof(inspect_accepted), 2u);
+    CHECK(jetson_protocol_take_frame(&parser, &frame));
+    CHECK(jetson_protocol_decode_legacy_inspect_reply(&frame,
+                                                      &command,
+                                                      &accepted));
+    CHECK((command == 1u) && accepted);
+
+    jetson_protocol_feed(&parser, inspect_rejected,
+                         sizeof(inspect_rejected), 3u);
+    CHECK(jetson_protocol_take_frame(&parser, &frame));
+    CHECK(jetson_protocol_decode_legacy_inspect_reply(&frame,
+                                                      &command,
+                                                      &accepted));
+    CHECK((command == 1u) && !accepted);
+
+    jetson_protocol_feed(&parser, inspect_stopped,
+                         sizeof(inspect_stopped), 4u);
+    CHECK(jetson_protocol_take_frame(&parser, &frame));
+    CHECK(jetson_protocol_decode_legacy_inspect_reply(&frame,
+                                                      &command,
+                                                      &accepted));
+    CHECK((command == 0u) && accepted);
+    return true;
+}
+
+static bool test_legacy_single_byte_version_is_not_self_check(void)
+{
+    jetson_frame_t frame = {
+        .function = JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK,
+        .payload = {1u},
+        .payload_length = 1u,
+        .timestamp_ms = 0u,
+    };
+    bool passed = true;
+    uint8_t error_code = 0xFFu;
+
+    CHECK(!jetson_protocol_decode_self_check(&frame, &passed, &error_code));
     return true;
 }
 
@@ -284,6 +382,8 @@ int main(void)
     RUN(test_old_motion_golden_len_checksum_and_signed_values);
     RUN(test_old_receive_golden_frames);
     RUN(test_old_transmit_golden_frames);
+    RUN(test_deployed_bridge_self_check_and_inspect_ack_frames);
+    RUN(test_legacy_single_byte_version_is_not_self_check);
     RUN(test_single_byte_segments_and_leading_noise);
     RUN(test_checksum_error_resynchronizes_to_next_frame);
     RUN(test_reject_bad_lengths_and_unknown_function);

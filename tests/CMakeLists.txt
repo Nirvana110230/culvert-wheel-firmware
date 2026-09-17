@@ -62,6 +62,7 @@ add_executable(chassis_app_tests
     ../Protocol/Src/modbus_rx_assembler.c
     ../Protocol/Src/mssd_driver.c
     ../Bsp/Src/jetson_uart_transport.c
+    ../Bsp/Src/board_status_outputs.c
     ../Bsp/Src/rs485_transport.c
     ../Bsp/Src/uart_dma_rx_buffer.c
     ../Bsp/Src/usart2_rs485_adapter.c
@@ -76,6 +77,52 @@ target_include_directories(chassis_app_tests PRIVATE
 target_compile_features(chassis_app_tests PRIVATE c_std_11)
 target_compile_options(chassis_app_tests PRIVATE -Wall -Wextra -Werror -pedantic)
 add_test(NAME chassis_app COMMAND chassis_app_tests)
+
+add_executable(board_status_outputs_tests
+    test_board_status_outputs.c
+    ../Bsp/Src/board_status_outputs.c
+)
+target_include_directories(board_status_outputs_tests PRIVATE
+    stubs
+    ../Application/Inc
+    ../Bsp/Inc
+)
+target_compile_features(board_status_outputs_tests PRIVATE c_std_11)
+target_compile_options(board_status_outputs_tests PRIVATE
+    -Wall -Wextra -Werror -pedantic
+)
+add_test(NAME board_status_outputs COMMAND board_status_outputs_tests)
+
+add_executable(chassis_end_to_end_tests
+    test_chassis_end_to_end.c
+    ../Application/Src/chassis_app.c
+    ../Application/Src/app_state_machine.c
+    ../Application/Src/chassis_kinematics.c
+    ../Application/Src/motion_supervisor.c
+    ../Services/Src/rc_input.c
+    ../Protocol/Src/jetson_protocol.c
+    ../Protocol/Src/modbus_rtu.c
+    ../Protocol/Src/modbus_rx_assembler.c
+    ../Protocol/Src/mssd_driver.c
+    ../Bsp/Src/board_status_outputs.c
+    ../Bsp/Src/jetson_uart_transport.c
+    ../Bsp/Src/rs485_transport.c
+    ../Bsp/Src/uart_dma_rx_buffer.c
+    ../Bsp/Src/uart_hal_callbacks.c
+    ../Bsp/Src/usart2_rs485_adapter.c
+)
+target_include_directories(chassis_end_to_end_tests PRIVATE
+    stubs
+    ../Application/Inc
+    ../Services/Inc
+    ../Protocol/Inc
+    ../Bsp/Inc
+)
+target_compile_features(chassis_end_to_end_tests PRIVATE c_std_11)
+target_compile_options(chassis_end_to_end_tests PRIVATE
+    -Wall -Wextra -Werror -pedantic
+)
+add_test(NAME chassis_end_to_end COMMAND chassis_end_to_end_tests)
 
 add_executable(rc_input_tests
     test_rc_input.c

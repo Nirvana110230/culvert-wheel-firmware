@@ -79,6 +79,12 @@ void jetson_protocol_poll(jetson_protocol_t *parser, uint32_t now_ms);
 bool jetson_protocol_take_frame(jetson_protocol_t *parser, jetson_frame_t *frame);
 bool jetson_protocol_decode_motion(const jetson_frame_t *frame,
                                    jetson_motion_frame_t *motion);
+bool jetson_protocol_decode_self_check(const jetson_frame_t *frame,
+                                       bool *passed,
+                                       uint8_t *error_code);
+bool jetson_protocol_decode_legacy_inspect_reply(const jetson_frame_t *frame,
+                                                 uint8_t *command,
+                                                 bool *accepted);
 bool jetson_protocol_build(uint8_t direction_head,
                            uint8_t function,
                            const uint8_t *payload,

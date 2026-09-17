@@ -2,6 +2,7 @@
 #define CHASSIS_APP_H
 
 #include "app_state_machine.h"
+#include "board_status_outputs.h"
 #include "chassis_kinematics.h"
 #include "jetson_protocol.h"
 #include "jetson_uart_transport.h"
@@ -34,7 +35,32 @@ typedef struct
     uint32_t status_poll_period_ms;
     uint32_t target_refresh_period_ms;
     uint32_t inspect_request_timeout_ms;
+    uint32_t jetson_self_check_period_ms;
+    uint32_t emergency_beep_half_period_ms;
+    bool require_jetson_self_check;
+    bool beep_active_high;
 } chassis_app_config_t;
+
+typedef struct
+{
+    bool self_check_pending;
+    bool inspect_start_pending;
+    bool inspect_stop_pending;
+    bool emergency_pending;
+    uint8_t emergency_value;
+    bool mode_pending;
+    uint8_t mode_value;
+} chassis_jetson_outbox_t;
+
+typedef enum
+{
+    CHASSIS_JETSON_TX_NONE = 0,
+    CHASSIS_JETSON_TX_SELF_CHECK,
+    CHASSIS_JETSON_TX_INSPECT_START,
+    CHASSIS_JETSON_TX_INSPECT_STOP,
+    CHASSIS_JETSON_TX_EMERGENCY,
+    CHASSIS_JETSON_TX_MODE
+} chassis_jetson_tx_kind_t;
 
 typedef struct
 {
@@ -63,6 +89,9 @@ typedef struct
     motion_stop_reason_t stop_reason;
     bool motor_target_reached_available;
     bool brake_feedback_available;
+    bool jetson_self_check_received;
+    bool jetson_self_check_passed;
+    uint8_t jetson_self_check_error;
 } chassis_app_diagnostics_t;
 
 typedef struct
@@ -75,18 +104,28 @@ typedef struct
     rs485_transport_t transport;
     mssd_driver_t mssd;
     usart2_rs485_adapter_t usart2_adapter;
+    board_status_outputs_t status_outputs;
     chassis_app_config_t config;
     chassis_app_diagnostics_t diagnostics;
     chassis_app_startup_state_t startup_state;
     uint32_t inspect_request_started_ms;
     uint32_t next_status_poll_ms;
     uint32_t next_target_refresh_ms;
-    uint8_t pending_jetson_function;
+    uint32_t next_self_check_request_ms;
+    chassis_jetson_outbox_t jetson_outbox;
+    chassis_jetson_tx_kind_t jetson_tx_kind;
+    uint32_t jetson_tx_completion_snapshot;
+    uint8_t jetson_tx_payload;
     bool inspect_request_active;
     bool safe_stop_pending;
     bool safe_stop_delivered;
     bool safe_stop_attempted;
     bool self_check_completed;
+    bool jetson_self_check_received;
+    bool jetson_self_check_passed;
+    bool jetson_self_check_request_outstanding;
+    bool jetson_tx_inflight;
+    uint8_t jetson_self_check_error;
     mssd_stop_type_t pending_stop_type;
     motion_stop_reason_t pending_stop_reason;
     bool started;
@@ -103,6 +142,11 @@ bool chassis_app_init(chassis_app_t *app,
                       DMA_HandleTypeDef *tx_dma,
                       GPIO_TypeDef *de_port,
                       uint16_t de_pin);
+
+/* Attaches the evidence-backed PB8 emergency buzzer output. */
+bool chassis_app_attach_status_outputs(chassis_app_t *app,
+                                       GPIO_TypeDef *beep_port,
+                                       uint16_t beep_pin);
 
 /* Starts receive-only communication and RC capture. It sends no MSSD command. */
 bool chassis_app_start(chassis_app_t *app);
