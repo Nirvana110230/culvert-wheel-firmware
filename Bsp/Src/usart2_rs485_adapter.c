@@ -5,6 +5,11 @@
 
 static usart2_rs485_adapter_t *volatile active_adapter;
 
+/* 3.5 characters at 9600 8N1 are 3.65 ms. Allow for 1 ms tick quantization. */
+#define USART2_RTU_SILENCE_MS 5u
+
+static bool take_isr_flag(volatile bool *flag);
+
 static bool port_set_de(bool transmit, void *context)
 {
     usart2_rs485_adapter_t *adapter = context;
@@ -13,10 +18,31 @@ static bool port_set_de(bool transmit, void *context)
     {
         return false;
     }
+    if (transmit)
+    {
+        adapter->tc_received = false;
+        uart_dma_rx_buffer_discard(&adapter->rx_buffer);
+    }
+    else if (adapter->de_transmit || adapter->tc_received)
+    {
+        adapter->silence_required = true;
+        adapter->last_activity_ms = adapter->poll_now_ms;
+    }
     HAL_GPIO_WritePin(adapter->de_port,
                       adapter->de_pin,
                       transmit ? GPIO_PIN_SET : GPIO_PIN_RESET);
     adapter->de_transmit = transmit;
+    if (!transmit && adapter->tx_active)
+    {
+        /* The previous DMA must release the request buffer before it is reused. */
+        if (HAL_UART_AbortTransmit(adapter->uart) != HAL_OK)
+        {
+            ++adapter->stats.transmit_abort_failures;
+            return false;
+        }
+        adapter->tx_active = false;
+        (void)take_isr_flag(&adapter->tx_dma_event_pending);
+    }
     return true;
 }
 
@@ -25,15 +51,19 @@ static bool port_start_dma(const uint8_t *data, size_t length, void *context)
     usart2_rs485_adapter_t *adapter = context;
 
     if ((adapter == NULL) || (adapter->state != USART2_RS485_ADAPTER_RUNNING) ||
-        (data == NULL) || (length == 0u) || (length > UINT16_MAX) ||
-        (HAL_UART_Transmit_DMA(adapter->uart,
-                               data,
-                               (uint16_t)length) != HAL_OK))
+        (data == NULL) || (length == 0u) || (length > UINT16_MAX))
     {
         if (adapter != NULL)
         {
             ++adapter->stats.transmit_start_failures;
         }
+        return false;
+    }
+    adapter->tx_active = true;
+    if (HAL_UART_Transmit_DMA(adapter->uart, data, (uint16_t)length) != HAL_OK)
+    {
+        adapter->tx_active = false;
+        ++adapter->stats.transmit_start_failures;
         return false;
     }
     return true;
@@ -43,8 +73,8 @@ static bool port_uart_tc(void *context)
 {
     const usart2_rs485_adapter_t *adapter = context;
 
-    return (adapter != NULL) &&
-           (__HAL_UART_GET_FLAG(adapter->uart, UART_FLAG_TC) != RESET);
+    return (adapter != NULL) && (adapter->tc_received ||
+           (__HAL_UART_GET_FLAG(adapter->uart, UART_FLAG_TC) != RESET));
 }
 
 static bool take_isr_flag(volatile bool *flag)
@@ -77,6 +107,7 @@ static void clear_receive_pipeline(usart2_rs485_adapter_t *adapter)
     (void)take_isr_flag(&adapter->uart_error_pending);
     modbus_rx_assembler_reset(&adapter->assembler);
     uart_dma_rx_buffer_reset_stream(&adapter->rx_buffer);
+    adapter->have_rx_event = false;
     adapter->response_window_open = false;
 }
 
@@ -90,6 +121,7 @@ static bool start_receive(usart2_rs485_adapter_t *adapter)
         return false;
     }
     __HAL_DMA_DISABLE_IT(adapter->rx_dma, DMA_IT_HT);
+    adapter->last_rx_remaining = __HAL_DMA_GET_COUNTER(adapter->rx_dma);
     return true;
 }
 
@@ -267,13 +299,31 @@ void usart2_rs485_adapter_poll(usart2_rs485_adapter_t *adapter, uint32_t now_ms)
 {
     bool pipeline_error = false;
     uint8_t byte;
+    uint32_t rx_remaining;
 
-    if ((adapter == NULL) || (active_adapter != adapter) ||
-        (adapter->state == USART2_RS485_ADAPTER_STOPPED))
+    if ((adapter == NULL) || (active_adapter != adapter))
     {
         return;
     }
     adapter->poll_now_ms = now_ms;
+    if (adapter->state == USART2_RS485_ADAPTER_STOPPED)
+    {
+        /* A failed recovery cannot service requests scheduled by the supervisor. */
+        if (transport_is_active(adapter->transport))
+        {
+            (void)rs485_transport_uart_error(adapter->transport, now_ms);
+            mssd_driver_poll(adapter->driver, now_ms);
+        }
+        return;
+    }
+    rx_remaining = __HAL_DMA_GET_COUNTER(adapter->rx_dma);
+    if ((rx_remaining != adapter->last_rx_remaining) ||
+        (uart_dma_rx_buffer_count(&adapter->rx_buffer) != 0u))
+    {
+        adapter->last_activity_ms = now_ms;
+        adapter->silence_required = true;
+    }
+    adapter->last_rx_remaining = rx_remaining;
 
     if (take_isr_flag(&adapter->uart_error_pending))
     {
@@ -306,6 +356,18 @@ void usart2_rs485_adapter_poll(usart2_rs485_adapter_t *adapter, uint32_t now_ms)
         }
     }
 
+    if ((adapter->transport->state == RS485_SWITCH_TO_TX) &&
+        adapter->silence_required &&
+        ((uint32_t)(now_ms - adapter->last_activity_ms) < USART2_RTU_SILENCE_MS))
+    {
+        uart_dma_rx_buffer_discard(&adapter->rx_buffer);
+        rs485_transport_wait_for_bus(adapter->transport, now_ms);
+        if (adapter->transport->state == RS485_TIMEOUT)
+        {
+            mssd_driver_poll(adapter->driver, now_ms);
+        }
+        return;
+    }
     mssd_driver_poll(adapter->driver, now_ms);
     if (adapter->transport->state != RS485_WAIT_RESPONSE)
     {
@@ -315,7 +377,11 @@ void usart2_rs485_adapter_poll(usart2_rs485_adapter_t *adapter, uint32_t now_ms)
             modbus_rx_assembler_reset(&adapter->assembler);
         }
         adapter->response_window_open = false;
-        uart_dma_rx_buffer_discard(&adapter->rx_buffer);
+        if (!adapter->tc_received ||
+            (adapter->transport->state != RS485_SWITCH_TO_RX))
+        {
+            uart_dma_rx_buffer_discard(&adapter->rx_buffer);
+        }
         return;
     }
 
@@ -325,8 +391,19 @@ void usart2_rs485_adapter_poll(usart2_rs485_adapter_t *adapter, uint32_t now_ms)
         adapter->response_window_open = true;
     }
     while (adapter->response_window_open &&
-           uart_dma_rx_buffer_take(&adapter->rx_buffer, &byte))
+           (adapter->rx_buffer.tail != adapter->rx_buffer.head))
     {
+        const uint16_t slot = adapter->rx_buffer.tail;
+        const bool gap_before = adapter->gap_before[slot];
+        if (!uart_dma_rx_buffer_take(&adapter->rx_buffer, &byte))
+        {
+            break;
+        }
+        if (gap_before && (modbus_rx_assembler_pending_length(&adapter->assembler) != 0u))
+        {
+            modbus_rx_assembler_reset(&adapter->assembler);
+            ++adapter->stats.frame_gap_resets;
+        }
         (void)modbus_rx_assembler_feed(&adapter->assembler,
                                        &byte,
                                        1u,
@@ -341,9 +418,15 @@ void usart2_rs485_adapter_poll(usart2_rs485_adapter_t *adapter, uint32_t now_ms)
 }
 
 void usart2_rs485_adapter_dispatch_rx_event(UART_HandleTypeDef *uart,
-                                            uint16_t dma_position)
+                                            uint16_t dma_position,
+                                            uint32_t received_ms)
 {
     usart2_rs485_adapter_t *adapter = active_adapter;
+    uint16_t first;
+    uint16_t slot;
+    uint16_t added;
+    bool idle;
+    uint32_t span_chars;
 
     if ((adapter == NULL) || (uart != adapter->uart) ||
         (adapter->state != USART2_RS485_ADAPTER_RUNNING))
@@ -351,6 +434,8 @@ void usart2_rs485_adapter_dispatch_rx_event(UART_HandleTypeDef *uart,
         return;
     }
     ++adapter->stats.rx_events;
+    first = adapter->rx_buffer.head;
+    idle = HAL_UARTEx_GetRxEventType(uart) == HAL_UART_RXEVENT_IDLE;
     if (!uart_dma_rx_buffer_publish(&adapter->rx_buffer,
                                     adapter->rx_dma_buffer,
                                     sizeof(adapter->rx_dma_buffer),
@@ -360,6 +445,27 @@ void usart2_rs485_adapter_dispatch_rx_event(UART_HandleTypeDef *uart,
     {
         ++adapter->stats.invalid_rx_events;
     }
+    added = (uint16_t)((adapter->rx_buffer.head + UART_DMA_RX_RING_SIZE - first) %
+                       UART_DMA_RX_RING_SIZE);
+    if (added == 0u)
+    {
+        return;
+    }
+    for (slot = first; slot != adapter->rx_buffer.head;
+         slot = (uint16_t)((slot + 1u) % UART_DMA_RX_RING_SIZE))
+    {
+        adapter->gap_before[slot] = false;
+    }
+    /* The later batch itself took at least 'added' characters on the wire.
+       IDLE reports one character after the end, while DMA TC reports at the end.
+       Account for the 1 ms tick uncertainty at the manual's four-character limit. */
+    span_chars = 4u + added + (idle ? 1u : 0u) - (adapter->last_rx_was_idle ? 1u : 0u);
+    adapter->gap_before[first] = adapter->have_rx_event &&
+        ((uint32_t)(received_ms - adapter->last_rx_event_ms) >=
+         (span_chars * 10000u / 9600u));
+    adapter->last_rx_event_ms = received_ms;
+    adapter->last_rx_was_idle = idle;
+    adapter->have_rx_event = true;
 }
 
 void usart2_rs485_adapter_dispatch_tx_dma_irq(DMA_HandleTypeDef *dma)
@@ -370,14 +476,15 @@ void usart2_rs485_adapter_dispatch_tx_dma_irq(DMA_HandleTypeDef *dma)
     {
         return;
     }
-    if (HAL_DMA_GetError(dma) == HAL_DMA_ERROR_NONE)
-    {
-        adapter->tx_dma_event_pending = true;
-    }
-    else
+    if (HAL_DMA_GetError(dma) != HAL_DMA_ERROR_NONE)
     {
         ++adapter->stats.dma_errors;
         adapter->uart_error_pending = true;
+    }
+    else if (adapter->tx_active && (HAL_DMA_GetState(dma) == HAL_DMA_STATE_READY))
+    {
+        /* Normal-mode HT keeps the handle BUSY; only TC restores READY. */
+        adapter->tx_dma_event_pending = true;
     }
 }
 
@@ -388,6 +495,13 @@ void usart2_rs485_adapter_dispatch_uart_tc(UART_HandleTypeDef *uart)
     if ((adapter != NULL) && (uart == adapter->uart))
     {
         ++adapter->stats.uart_tc_events;
+        if (adapter->tx_active)
+        {
+            HAL_GPIO_WritePin(adapter->de_port, adapter->de_pin, GPIO_PIN_RESET);
+            adapter->de_transmit = false;
+            adapter->tx_active = false;
+            adapter->tc_received = true;
+        }
     }
 }
 

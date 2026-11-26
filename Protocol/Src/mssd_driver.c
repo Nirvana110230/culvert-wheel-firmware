@@ -273,7 +273,10 @@ static bool advance_to_left_step(mssd_driver_t *driver, uint32_t now_ms)
 {
     size_t request_length = 0u;
 
-    remember_completed_request(driver);
+    if (driver->result.right == MSSD_SIDE_SUCCEEDED)
+    {
+        remember_completed_request(driver);
+    }
     if (!rs485_transport_acknowledge(driver->transport, now_ms) ||
         !build_left_sequence_step(driver, &request_length))
     {
@@ -342,14 +345,44 @@ static void finish_success(mssd_driver_t *driver,
     }
 
     remember_completed_request(driver);
+    if (driver->result.right == MSSD_SIDE_FAILED)
+    {
+        driver->result.completion = MSSD_COMPLETION_PARTIAL_COMMIT;
+        driver->error.code = MSSD_ERROR_PARTIAL_COMMIT;
+        driver->state = MSSD_DRIVER_PARTIAL_COMMIT;
+        return;
+    }
     driver->result.completion = MSSD_COMPLETION_SUCCEEDED;
     driver->state = MSSD_DRIVER_COMPLETE;
 }
 
 static void finish_failure(mssd_driver_t *driver,
-                           mssd_error_code_t error_code)
+                           mssd_error_code_t error_code,
+                           uint32_t now_ms)
 {
     set_side_result(driver, driver->current_channel, MSSD_SIDE_FAILED);
+    if (driver->operation == MSSD_OPERATION_READ_CONFIGURATION)
+    {
+        driver->configuration.valid = false;
+    }
+    else if (driver->operation == MSSD_OPERATION_READ_RIGHT_STATUS)
+    {
+        driver->right_status.valid = false;
+    }
+    else if (driver->operation == MSSD_OPERATION_READ_LEFT_STATUS)
+    {
+        driver->left_status.valid = false;
+    }
+    /* Each side can still stop or engage its brake after the other side fails. */
+    if (((driver->operation == MSSD_OPERATION_STOP_BOTH) ||
+         ((driver->operation == MSSD_OPERATION_BRAKE_BOTH) &&
+          (driver->brake_intent == MSSD_BRAKE_ENGAGE))) &&
+        (driver->current_channel == MSSD_CHANNEL_RIGHT) &&
+        (error_code != MSSD_ERROR_ABORTED_FOR_SAFETY) &&
+        advance_to_left_step(driver, now_ms))
+    {
+        return;
+    }
     if ((driver->current_channel == MSSD_CHANNEL_LEFT) &&
         (driver->result.right == MSSD_SIDE_SUCCEEDED))
     {
@@ -483,6 +516,36 @@ mssd_request_status_t mssd_driver_request_configuration(mssd_driver_t *driver,
         driver->error.code = MSSD_ERROR_BUILD_FRAME;
         return MSSD_REQUEST_BUILD_FAILED;
     }
+    return begin_operation(driver, request_length, now_ms);
+}
+
+mssd_request_status_t mssd_driver_request_initialize_configuration(mssd_driver_t *driver,
+                                                                   uint32_t now_ms)
+{
+    /* 0x007B..0x007E: independent speed, communication, FOC, speed/current. */
+    static const uint16_t values[] = {1u, 0u, 1u, 1u};
+    size_t request_length = 0u;
+    mssd_request_status_t status = prepare_operation(driver);
+
+    if (status != MSSD_REQUEST_ACCEPTED)
+    {
+        return status;
+    }
+    if (!modbus_rtu_build_write_multiple(driver->config.slave_address,
+                                         MSSD_REG_SYSTEM_MODE,
+                                         values,
+                                         sizeof(values) / sizeof(values[0]),
+                                         driver->request,
+                                         sizeof(driver->request),
+                                         &request_length))
+    {
+        driver->error.code = MSSD_ERROR_BUILD_FRAME;
+        return MSSD_REQUEST_BUILD_FAILED;
+    }
+    driver->configuration.valid = false;
+    driver->motion_authorized = false;
+    driver->operation = MSSD_OPERATION_INITIALIZE_CONFIGURATION;
+    driver->current_channel = MSSD_CHANNEL_BOTH;
     return begin_operation(driver, request_length, now_ms);
 }
 
@@ -675,7 +738,7 @@ void mssd_driver_poll(mssd_driver_t *driver, uint32_t now_ms)
         }
         finish_failure(driver,
                        (driver->transport->state == RS485_TIMEOUT) ?
-                           MSSD_ERROR_TIMEOUT : MSSD_ERROR_TRANSPORT);
+                           MSSD_ERROR_TIMEOUT : MSSD_ERROR_TRANSPORT, now_ms);
     }
 }
 
@@ -691,7 +754,7 @@ bool mssd_driver_abort_for_safety(mssd_driver_t *driver, uint32_t now_ms)
     {
         return false;
     }
-    finish_failure(driver, MSSD_ERROR_ABORTED_FOR_SAFETY);
+    finish_failure(driver, MSSD_ERROR_ABORTED_FOR_SAFETY, now_ms);
     return true;
 }
 
@@ -756,7 +819,7 @@ mssd_response_status_t mssd_driver_on_response(mssd_driver_t *driver,
 
     if (!rs485_transport_response_complete(driver->transport, now_ms))
     {
-        finish_failure(driver, MSSD_ERROR_TRANSPORT);
+        finish_failure(driver, MSSD_ERROR_TRANSPORT, now_ms);
         return MSSD_RESPONSE_UNEXPECTED_FRAME;
     }
 
@@ -764,7 +827,7 @@ mssd_response_status_t mssd_driver_on_response(mssd_driver_t *driver,
     {
         driver->error.modbus_status = validation.status;
         driver->error.exception_code = validation.exception_code;
-        finish_failure(driver, MSSD_ERROR_MODBUS_EXCEPTION);
+        finish_failure(driver, MSSD_ERROR_MODBUS_EXCEPTION, now_ms);
         return MSSD_RESPONSE_ACCEPTED;
     }
 

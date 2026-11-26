@@ -10,7 +10,7 @@
 
 #define MSSD_DEFAULT_SLAVE_ADDRESS 1u
 #define MSSD_MAX_READ_RETRIES 2u
-#define MSSD_MAX_REQUEST_SIZE 13u
+#define MSSD_MAX_REQUEST_SIZE 17u
 
 #define MSSD_REG_RIGHT_PHASE_CURRENT 0x0008u
 #define MSSD_REG_RIGHT_SPEED_HIGH 0x0009u
@@ -176,7 +176,8 @@ typedef enum
     MSSD_OPERATION_STOP,
     MSSD_OPERATION_STOP_BOTH,
     MSSD_OPERATION_BRAKE,
-    MSSD_OPERATION_BRAKE_BOTH
+    MSSD_OPERATION_BRAKE_BOTH,
+    MSSD_OPERATION_INITIALIZE_CONFIGURATION
 } mssd_operation_t;
 
 typedef struct
@@ -219,6 +220,9 @@ mssd_request_status_t mssd_driver_request_status(mssd_driver_t *driver,
                                                  uint32_t now_ms);
 mssd_request_status_t mssd_driver_request_configuration(mssd_driver_t *driver,
                                                         uint32_t now_ms);
+/* Writes the four original operating modes. A subsequent FC03 verifies them. */
+mssd_request_status_t mssd_driver_request_initialize_configuration(mssd_driver_t *driver,
+                                                                   uint32_t now_ms);
 mssd_request_status_t mssd_driver_request_target_rpm(mssd_driver_t *driver,
                                                      mssd_channel_t channel,
                                                      int32_t rpm,

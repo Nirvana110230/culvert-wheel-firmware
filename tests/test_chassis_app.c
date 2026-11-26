@@ -16,6 +16,7 @@ static uint32_t interrupt_mask;
 static rc_capture_sample_t rc_samples[8];
 static size_t rc_sample_count;
 static size_t rc_sample_index;
+static uint32_t rc_dropped_samples;
 
 #define CHECK(condition)                                                        \
     do                                                                          \
@@ -123,13 +124,20 @@ void __enable_irq(void)
     interrupt_mask = 0u;
 }
 
-bool rc_capture_start(void)
+bool rc_capture_start(bool queue_inspection_channel)
 {
+    (void)queue_inspection_channel;
     return true;
 }
 
 void rc_capture_stop(void)
 {
+}
+
+void rc_capture_read_snapshot(rc_capture_snapshot_t *snapshot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->dropped_samples = rc_dropped_samples;
 }
 
 bool rc_capture_take_sample(rc_capture_sample_t *sample)
@@ -195,6 +203,20 @@ static bool test_startup_first_transaction_is_configuration_read(void)
     CHECK(!mssd_driver_get_motion_authorized(&app.mssd));
     CHECK(chassis_app_stop(&app));
     CHECK(!app.started);
+    return true;
+}
+
+static bool test_wheel_configuration_has_original_command_range(void)
+{
+    const chassis_app_config_t config = chassis_app_wheel_rc_config();
+    CHECK(config.profile == CHASSIS_STANDALONE_RC);
+    CHECK(config.supervisor.motion_enable && config.rc_mapping_verified);
+    CHECK(config.kinematics.legacy_wheel_quantization);
+    CHECK(config.kinematics.maximum_motor_rpm == 426.0);
+    CHECK(config.target_refresh_period_ms == 20u && config.status_poll_period_ms == 500u);
+    CHECK(config.mssd.right_brake.mapping_valid && config.mssd.left_brake.mapping_valid);
+    CHECK(config.mssd.right_brake.engage_raw == 1u && config.mssd.left_brake.engage_raw == 1u);
+    CHECK(config.mssd.right_brake.release_raw == 0u && config.mssd.left_brake.release_raw == 0u);
     return true;
 }
 
@@ -279,8 +301,9 @@ static bool test_emergency_aborts_target_and_prioritizes_stop(void)
 
     app.machine.state = APP_STATE_EMERGENCY;
     chassis_app_poll(&app, 21u);
-    CHECK(app.mssd.state == MSSD_DRIVER_FAILED);
+    CHECK(app.mssd.operation == MSSD_OPERATION_STOP_BOTH);
     CHECK(app.transport.errors.aborts == 1u);
+    CHECK(!app.supervisor.communication_fault);
     chassis_app_poll(&app, 22u);
     CHECK(app.mssd.operation == MSSD_OPERATION_STOP_BOTH);
     CHECK(app.mssd.request[1] == 0x06u);
@@ -348,6 +371,13 @@ static bool test_boot_waits_for_deployed_jetson_self_check(void)
     app.protocol.queue[0] = response;
     app.protocol.queue_head = 1u;
     app.protocol.queue_count = 1u;
+    for (size_t i = 0u; i < RC_INPUT_CHANNEL_COUNT; ++i)
+    {
+        const uint16_t pulse = (i == RC_INPUT_CH6) ? 2000u :
+            ((i == RC_INPUT_CH7) ? 1000u : 1500u);
+        rc_samples[rc_sample_count++] =
+            (rc_capture_sample_t){(rc_input_channel_t)i, pulse, 1u};
+    }
     chassis_app_poll(&app, 1u);
     CHECK(app.machine.state == APP_STATE_STANDBY);
     CHECK(app.diagnostics.jetson_self_check_passed);
@@ -539,6 +569,7 @@ static bool test_acceptance_starts_with_fresh_zero_speed_grace(void)
     app.machine.state = APP_STATE_INSPECT_REQUESTED;
     app.machine.selected_mode = APP_MODE_SELECTION_STANDBY;
     app.inspect_request_active = true;
+    app.inspect_request_sent = true;
     app.safe_stop_attempted = true;
     motion_supervisor_set_app_state(&app.supervisor,
                                     APP_STATE_INSPECT_REQUESTED,
@@ -557,8 +588,151 @@ static bool test_acceptance_starts_with_fresh_zero_speed_grace(void)
     return true;
 }
 
+static bool test_unanswered_self_check_is_sent_again_at_deadline(void)
+{
+    chassis_app_t app;
+    chassis_app_config_t config = chassis_app_default_config();
+    DMA_HandleTypeDef rx_dma = {0}, tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+    config.jetson_self_check_period_ms = 5u;
+    CHECK(start_test_app(&app, &config, &rx_dma, &tx_dma, &de_port));
+    chassis_app_poll(&app, 0u);
+    jetson_uart_transport_dispatch_tx_complete();
+    chassis_app_poll(&app, 1u);
+    chassis_app_poll(&app, 4u);
+    CHECK(jetson_transmit_starts == 1u);
+    chassis_app_poll(&app, 5u);
+    CHECK(jetson_transmit_starts == 2u);
+    CHECK(app.jetson_transport.tx_buffer[3] ==
+          JETSON_FUNC_LEGACY_VERSION_OR_SELF_CHECK);
+    CHECK(app.machine.state == APP_STATE_BOOT_SAFE);
+    CHECK(chassis_app_stop(&app));
+    return true;
+}
+
+static bool test_capture_loss_faults_and_preempts_boot_read(void)
+{
+    chassis_app_t app;
+    chassis_app_config_t config = chassis_app_default_config();
+    DMA_HandleTypeDef rx_dma = {0}, tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+    CHECK(start_test_app(&app, &config, &rx_dma, &tx_dma, &de_port));
+    rc_dropped_samples = 1u;
+    chassis_app_poll(&app, 1u);
+    CHECK(app.machine.state == APP_STATE_FAULT);
+    CHECK(app.mssd.operation == MSSD_OPERATION_STOP_BOTH);
+    CHECK(app.pending_stop_type == MSSD_STOP_EMERGENCY);
+    rc_dropped_samples = 0u;
+    CHECK(chassis_app_stop(&app));
+    return true;
+}
+
+static void queue_jetson(chassis_app_t *app, jetson_frame_t frame)
+{
+    app->protocol.queue[app->protocol.queue_head] = frame;
+    app->protocol.queue_head = (uint8_t)((app->protocol.queue_head + 1u) %
+                                         JETSON_PROTOCOL_QUEUE_CAPACITY);
+    ++app->protocol.queue_count;
+}
+
+static bool test_inspection_frames_must_belong_to_current_request(void)
+{
+    chassis_app_t app;
+    chassis_app_config_t config = chassis_app_default_config();
+    DMA_HandleTypeDef rx_dma = {0}, tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+    jetson_frame_t ack = {.function = JETSON_FUNC_LEGACY_INSPECT_CTRL,
+                          .payload = {1u, 1u}, .payload_length = 2u,
+                          .timestamp_ms = 10u};
+    jetson_frame_t finished = {.function = JETSON_FUNC_INSPECT_FINISHED,
+                               .timestamp_ms = 9u};
+    jetson_frame_t motion = {.function = JETSON_FUNC_MOTION,
+                             .payload = {0u, 100u, 0u, 0u, 0u, 0u, 0u},
+                             .payload_length = 7u, .timestamp_ms = 9u};
+    config.supervisor.jetson_timeout_ms = 5u;
+    CHECK(start_test_app(&app, &config, &rx_dma, &tx_dma, &de_port));
+    provide_valid_mssd_state(&app);
+    app.machine.state = APP_STATE_STANDBY;
+    app.machine.selected_mode = APP_MODE_SELECTION_STANDBY;
+    for (unsigned i = 0u; i < 3u; ++i)
+    {
+        rc_samples[rc_sample_count++] = (rc_capture_sample_t){RC_INPUT_CH5, 2000u, 10u};
+    }
+    queue_jetson(&app, ack);
+    chassis_app_poll(&app, 10u);
+    CHECK(app.machine.state == APP_STATE_INSPECT_REQUESTED);
+    CHECK(!app.inspect_request_sent);
+    queue_jetson(&app, ack);
+    chassis_app_poll(&app, 11u);
+    CHECK(app.machine.state == APP_STATE_INSPECT_REQUESTED);
+    jetson_uart_transport_dispatch_tx_complete();
+    ack.timestamp_ms = 9u;
+    queue_jetson(&app, ack);
+    chassis_app_poll(&app, 12u);
+    CHECK(app.machine.state == APP_STATE_INSPECT_REQUESTED);
+    ack.timestamp_ms = 13u;
+    queue_jetson(&app, ack);
+    chassis_app_poll(&app, 13u);
+    CHECK(app.machine.state == APP_STATE_INSPECTING);
+    queue_jetson(&app, finished);
+    queue_jetson(&app, motion);
+    chassis_app_poll(&app, 14u);
+    CHECK(app.machine.state == APP_STATE_INSPECTING);
+    CHECK(app.supervisor.jetson_command.linear_mm_s == 0.0);
+    ack.timestamp_ms = 15u;
+    queue_jetson(&app, ack);
+    chassis_app_poll(&app, 15u);
+    CHECK(app.supervisor.jetson_command.timestamp_ms == 13u);
+    motion.timestamp_ms = 18u;
+    queue_jetson(&app, motion);
+    chassis_app_poll(&app, 18u);
+    CHECK(app.machine.state == APP_STATE_STANDBY);
+    CHECK(!app.supervisor.jetson_command.valid);
+    CHECK(chassis_app_stop(&app));
+    return true;
+}
+
+static bool test_rc_command_uses_capture_time_and_invalidates_on_bad_sample(void)
+{
+    chassis_app_t app;
+    chassis_app_config_t config = chassis_app_default_config();
+    DMA_HandleTypeDef rx_dma = {0}, tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+    config.rc_mapping_verified = true;
+    config.rc_max_linear_mm_s = 1000.0;
+    config.rc_max_angular_mrad_s = 1000.0;
+    config.supervisor.rc_timeout_ms = 10u;
+    CHECK(start_test_app(&app, &config, &rx_dma, &tx_dma, &de_port));
+    provide_valid_mssd_state(&app);
+    app.machine.state = APP_STATE_REMOTE;
+    app.machine.selected_mode = APP_MODE_SELECTION_REMOTE;
+    motion_supervisor_set_app_state(&app.supervisor, APP_STATE_REMOTE, 0u);
+    rc_samples[0] = (rc_capture_sample_t){RC_INPUT_CH1, 1500u, 10u};
+    rc_samples[1] = (rc_capture_sample_t){RC_INPUT_CH2, 2000u, 11u};
+    rc_samples[2] = (rc_capture_sample_t){RC_INPUT_CH5, 1500u, 11u};
+    rc_samples[3] = (rc_capture_sample_t){RC_INPUT_CH6, 1000u, 11u};
+    rc_samples[4] = (rc_capture_sample_t){RC_INPUT_CH7, 1000u, 11u};
+    rc_sample_count = 5u;
+    chassis_app_poll(&app, 12u);
+    CHECK(app.diagnostics.rc_command_fresh);
+    CHECK(app.supervisor.rc_command.timestamp_ms == 10u);
+    chassis_app_poll(&app, 21u);
+    CHECK(!app.diagnostics.rc_command_fresh);
+    CHECK(app.rc_input.snapshot.signal_valid);
+    rc_samples[rc_sample_count++] = (rc_capture_sample_t){RC_INPUT_CH7, 1500u, 22u};
+    chassis_app_poll(&app, 22u);
+    CHECK(!app.rc_input.snapshot.signal_valid && !app.supervisor.rc_command.valid);
+    CHECK(chassis_app_stop(&app));
+    return true;
+}
+
 int main(void)
 {
+    RUN(test_wheel_configuration_has_original_command_range);
+    RUN(test_rc_command_uses_capture_time_and_invalidates_on_bad_sample);
+    RUN(test_capture_loss_faults_and_preempts_boot_read);
+    RUN(test_unanswered_self_check_is_sent_again_at_deadline);
+    RUN(test_inspection_frames_must_belong_to_current_request);
     RUN(test_default_configuration_is_motion_locked);
     RUN(test_startup_first_transaction_is_configuration_read);
     RUN(test_default_lock_converts_nonzero_intent_to_stop_only);

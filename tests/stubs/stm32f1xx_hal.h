@@ -20,7 +20,14 @@ typedef enum
 typedef struct
 {
     uint32_t error;
+    uint32_t state;
+    uint32_t remaining;
 } DMA_HandleTypeDef;
+
+#define HAL_DMA_STATE_READY 0u
+#define HAL_DMA_STATE_BUSY 1u
+#define HAL_DMA_GetState(dma) ((dma)->state)
+#define __HAL_DMA_GET_COUNTER(dma) ((dma)->remaining)
 
 typedef struct
 {
@@ -60,6 +67,7 @@ void HAL_GPIO_WritePin(GPIO_TypeDef *port, uint16_t pin, GPIO_PinState state);
 void test_hal_dma_disable_it(DMA_HandleTypeDef *dma, uint32_t interrupt);
 uint32_t test_hal_uart_get_flag(UART_HandleTypeDef *uart, uint32_t flag);
 uint32_t __get_PRIMASK(void);
+uint32_t HAL_GetTick(void);
 void __disable_irq(void);
 void __enable_irq(void);
 

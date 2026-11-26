@@ -11,7 +11,8 @@ static uint16_t ring_next(uint16_t position)
     return (uint16_t)((position + 1u) % JETSON_UART_SOFTWARE_RING_SIZE);
 }
 
-static void publish_byte_from_isr(jetson_uart_transport_t *transport, uint8_t byte)
+static void publish_byte_from_isr(jetson_uart_transport_t *transport,
+                                  uint8_t byte, uint32_t received_ms)
 {
     const uint16_t head = transport->ring_head;
     const uint16_t next = ring_next(head);
@@ -22,23 +23,26 @@ static void publish_byte_from_isr(jetson_uart_transport_t *transport, uint8_t by
         return;
     }
     transport->rx_ring[head] = byte;
+    transport->rx_time_ms[head] = received_ms;
     transport->ring_head = next;
 }
 
 static void publish_range_from_isr(jetson_uart_transport_t *transport,
                                    uint16_t begin,
-                                   uint16_t end)
+                                   uint16_t end,
+                                   uint32_t received_ms)
 {
     uint16_t index;
     const uint32_t dropped_before = transport->stats.dropped_bytes;
 
     for (index = begin; index < end; ++index)
     {
-        publish_byte_from_isr(transport, transport->rx_dma[index]);
+        publish_byte_from_isr(transport, transport->rx_dma[index], received_ms);
     }
     if (transport->stats.dropped_bytes != dropped_before)
     {
         ++transport->stats.software_overruns;
+        transport->state = JETSON_UART_RECOVERY_PENDING;
     }
 }
 
@@ -50,6 +54,8 @@ static void clear_receive_state(jetson_uart_transport_t *transport)
     transport->tx_complete_pending = false;
     transport->tx_busy = false;
     jetson_protocol_reset_partial_frame(transport->parser);
+    transport->parser->queue_tail = transport->parser->queue_head;
+    transport->parser->queue_count = 0u;
 }
 
 static bool start_receive_dma(jetson_uart_transport_t *transport)
@@ -124,7 +130,8 @@ bool jetson_uart_transport_reset(jetson_uart_transport_t *transport)
 }
 
 void jetson_uart_transport_on_rx_event(jetson_uart_transport_t *transport,
-                                       uint16_t dma_position)
+                                       uint16_t dma_position,
+                                       uint32_t received_ms)
 {
     uint16_t previous;
 
@@ -142,18 +149,18 @@ void jetson_uart_transport_on_rx_event(jetson_uart_transport_t *transport,
     previous = transport->dma_position;
     if (dma_position == JETSON_UART_DMA_BUFFER_SIZE)
     {
-        publish_range_from_isr(transport, previous, JETSON_UART_DMA_BUFFER_SIZE);
+        publish_range_from_isr(transport, previous, JETSON_UART_DMA_BUFFER_SIZE, received_ms);
         transport->dma_position = 0u;
     }
     else if (dma_position > previous)
     {
-        publish_range_from_isr(transport, previous, dma_position);
+        publish_range_from_isr(transport, previous, dma_position, received_ms);
         transport->dma_position = dma_position;
     }
     else if (dma_position < previous)
     {
-        publish_range_from_isr(transport, previous, JETSON_UART_DMA_BUFFER_SIZE);
-        publish_range_from_isr(transport, 0u, dma_position);
+        publish_range_from_isr(transport, previous, JETSON_UART_DMA_BUFFER_SIZE, received_ms);
+        publish_range_from_isr(transport, 0u, dma_position, received_ms);
         transport->dma_position = dma_position;
     }
     else
@@ -193,9 +200,15 @@ void jetson_uart_transport_poll(jetson_uart_transport_t *transport, uint32_t now
     {
         const uint16_t tail = transport->ring_tail;
         const uint8_t byte = transport->rx_ring[tail];
+        const uint32_t received_ms = transport->rx_time_ms[tail];
 
+        /* An IRQ may run after the main loop sampled now_ms. */
+        if ((uint32_t)(now_ms - received_ms) > INT32_MAX)
+        {
+            break;
+        }
         transport->ring_tail = ring_next(tail);
-        jetson_protocol_feed(transport->parser, &byte, 1u, now_ms);
+        jetson_protocol_feed(transport->parser, &byte, 1u, received_ms);
     }
     jetson_protocol_poll(transport->parser, now_ms);
 }
@@ -223,11 +236,11 @@ bool jetson_uart_transport_send_async(jetson_uart_transport_t *transport,
     return true;
 }
 
-void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position)
+void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position, uint32_t received_ms)
 {
     if (active_transport != NULL)
     {
-        jetson_uart_transport_on_rx_event(active_transport, dma_position);
+        jetson_uart_transport_on_rx_event(active_transport, dma_position, received_ms);
     }
 }
 

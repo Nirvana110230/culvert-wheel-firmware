@@ -99,7 +99,7 @@ int main(void)
   MX_TIM8_Init();
   /* USER CODE BEGIN 2 */
   {
-    const chassis_app_config_t config = chassis_app_default_config();
+    const chassis_app_config_t config = chassis_app_wheel_rc_config();
 
     chassis_app_ready =
         chassis_app_init(&chassis_app,

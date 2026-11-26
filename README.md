@@ -1,32 +1,28 @@
-# 涵洞巡检机器人底盘固件
+# 轮式巡检底盘固件 · STM32F103ZET6
 
-本目录是涵洞巡检机器人底盘的新固件工程，目标 MCU 为 STM32F103ZET6。工程由 STM32CubeMX 6.17.0 生成，使用 STM32CubeF1 V1.8.7、CMake 3.28.1 和 GNU Tools for STM32 13.3.1（`arm-none-eabi-gcc` 13.3.1）。
+本工程维护涵洞巡检机器人轮式底盘的独立遥控固件。板端入口为 `Core/Src/main.c::main`，轮式配置统一由 `Application/Src/chassis_app.c::chassis_app_wheel_rc_config()` 生成。Debug 和 Release 使用同一套轮式参数与控制逻辑。实车烧录使用交付目录中的 Release BIN。[正式固件烧录与使用说明](../../wheel-firmware/正式固件烧录与使用说明.md)
 
-## 当前阶段
+`Bsp` 处理 TIM3/TIM8 捕获、串口 DMA 和 RS485 换向。`Services/rc_input` 解析接收器，`Application` 执行模式切换、运动监督与差速换算，`Protocol` 负责 MSSD 和保留的上位机协议。独立档在本机完成初始化，依据遥控和真实电机反馈行驶。[控制链路](docs/chassis-control.md)
 
-当前仅开展离线开发。RC、Jetson、状态机、运动监督、运动学、MSSD/Modbus 和RS485 DMA已通过非阻塞组合层接入 `main()`。启动后只允许接收通信、读取MSSD配置/状态并执行安全停止；默认配置关闭方向映射、最大RPM和应用运动授权，因此任何RC或Jetson非零命令都不能形成非零RPM事务。
+## 构建
 
-状态机使用明确的 `REMOTE_ARMING` 和 `INSPECT_REQUESTED` 状态。一次性动作只表达清除命令、请求零速、请求抱闸、请求巡检或取消巡检；持续运动权限由当前状态的纯查询接口给出。权限仅代表上层授权，不代表立即松闸或发送速度。
-
-严禁将当前版本直接连接电机试车。进入任何硬件测试前，必须先完成 [待硬件验证清单](docs/hardware-validation-pending.md)，制定接线检查、架空轮测试、急停验证和回滚方案。
-
-## Release 构建
-
-在本目录执行：
+在本目录执行下列命令。PATH 应含 CMake、Ninja 和 GNU Arm Embedded 工具。每种构建均输出 ELF、BIN、HEX 和 MAP 到对应的 `build` 子目录。
 
 ```powershell
 cmake --preset Release
 cmake --build --preset Release
+cmake --preset Debug
+cmake --build --preset Debug
 ```
 
-主机侧测试可在已有主机 C 编译器的环境中构建运行。测试工程位于 `tests/`，HAL边界使用测试桩，不访问真实串口或硬件。RC模块设计和待验证参数见 [RC输入模块离线设计](docs/rc-input.md)，主链路与默认锁见 [底盘控制主链路](docs/chassis-control.md)。
+在带本机 GCC 的 Linux 或 WSL 中，从本目录运行已有的 Host Tests。
 
-## CubeMX 重新生成注意事项
+```sh
+cmake -S tests -B build/Host -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/Host
+ctest --test-dir build/Host --output-on-failure --no-tests=error
+```
 
-- `.ioc` 是外设配置的唯一生成输入，重新生成前先检查 Git 工作树并保存差异。
-- 不要把业务代码放入 `Core/` 或 `cmake/stm32cubemx/`；状态机保存在 `Application/`，HAL适配保存在 `Bsp/`，纯服务逻辑保存在 `Services/`，主机测试保存在 `tests/`。
-- 不直接修改 `cmake/stm32cubemx/CMakeLists.txt`。业务源文件和包含目录只在顶层 `CMakeLists.txt` 中接入。
-- 重新生成后必须审查 `.ioc`、`Core/`、启动文件、链接脚本和生成 CMake 文件的差异。
-- 重新生成后必须重新执行主机测试和 STM32 Release 构建，并再次核对 GPIO 初始安全电平。
+## 维护与历史
 
-更多约束见 [硬件映射](docs/hardware-map.md) 和 [安全需求](docs/safety-requirements.md)。
+`.ioc` 记录 CubeMX 外设配置。保留 `Core` 的 USER CODE 区、启动文件和链接脚本，业务源在顶层 CMake 清单注册。工程文档中的早期离线设计、默认锁和板级核查清单记录当时的开发状态。本版参数、当前运行逻辑、实测范围和交付镜像以本入口及正式报告为准。[原 Keil 对照报告](../../wheel-firmware/原Keil工程与新正式轮式固件详细对照报告.md)

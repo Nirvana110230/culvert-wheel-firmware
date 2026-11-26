@@ -41,6 +41,9 @@ typedef enum
     APP_EVENT_INSPECT_REQUEST_TIMEOUT,
     APP_EVENT_JETSON_MOTION_TIMEOUT,
     APP_EVENT_MOTOR_FAULT,
+    APP_EVENT_COMMUNICATION_FAULT,
+    APP_EVENT_RC_CAPTURE_LOST,
+    APP_EVENT_WHEEL_FAULT_RECOVERY_IN_STANDBY,
     APP_EVENT_COUNT
 } app_event_t;
 
@@ -54,10 +57,18 @@ typedef enum
     APP_ACTION_CANCEL_INSPECTION = (1u << 4)
 } app_action_t;
 
+typedef enum
+{
+    CHASSIS_HOST_INSPECTION = 0,
+    CHASSIS_STANDALONE_RC
+} chassis_operating_profile_t;
+
 typedef struct
 {
     app_state_t state;
     app_mode_selection_t selected_mode;
+    bool boot_interrupted;
+    chassis_operating_profile_t profile;
 } app_state_machine_t;
 
 typedef struct

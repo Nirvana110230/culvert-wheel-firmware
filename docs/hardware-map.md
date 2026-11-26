@@ -6,8 +6,8 @@
 |---|---|---|---|---|
 | Jetson 发送 | PA9 | USART1_TX / JETSON_TX | Jetson | 新固件侧 USART1 |
 | Jetson 接收 | PA10 | USART1_RX / JETSON_RX | Jetson | 新固件侧 USART1 |
-| MSSD 发送 | PA2 | USART2_TX / MSSD_TX | TP8485/MSSD | 当前不发送MSSD业务命令 |
-| MSSD 接收 | PA3 | USART2_RX / MSSD_RX | TP8485/MSSD | 当前不解析MSSD业务响应 |
+| MSSD 发送 | PA2 | USART2_TX / MSSD_TX | TP8485/MSSD | 经 P5-1/3，承载配置、反馈、轴速、停车和抱闸事务 |
+| MSSD 接收 | PA3 | USART2_RX / MSSD_RX | TP8485/MSSD | 经 P5-2/4，DMA 接收，前台校验 Modbus 应答 |
 | RS485方向 | PD7 | RS485_DE | TP8485 DE和/RE | 低电平为接收；复位窗口风险见待验证清单 |
 
 ## 遥控输入
@@ -20,7 +20,7 @@
 | CH6 | PC9 | TIM8_CH4 |
 | CH7急停 | PA6 | TIM3_CH1 |
 
-TIM3和TIM8均配置为1 MHz输入捕获计数。当前仅编译RC捕获接口，`main()`没有调用`rc_capture_start()`，因此空工程启动后不会主动开启这些捕获通道。阈值、消抖和失联策略见 [RC输入模块离线设计](rc-input.md)。
+TIM3 和 TIM8 均配置为 1 MHz 输入捕获。正常启动路径为 `main() → chassis_app_start() → rc_capture_start()`。独立档记录五路快照，前台消费四路驾驶输入，CH5 只监测。接线、周期与方向见[第二轮 PWM 实测](../../../recovery/2026-11-24/round2-board-validation/docs/04_遥控器PWM采集与标定报告.md)。
 
 ## 指示器件
 

@@ -65,11 +65,14 @@ int main(void)
     CHECK(!jetson_uart_transport_start(&transport, &parser));
 
     (void)memcpy(transport.rx_dma, frame, sizeof(frame));
-    jetson_uart_transport_on_rx_event(&transport, sizeof(frame));
-    jetson_uart_transport_on_rx_event(&transport, sizeof(frame));
-    jetson_uart_transport_poll(&transport, 1u);
+    jetson_uart_transport_on_rx_event(&transport, sizeof(frame), 1u);
+    jetson_uart_transport_on_rx_event(&transport, sizeof(frame), 1u);
+    jetson_uart_transport_poll(&transport, 0u);
+    CHECK(!jetson_protocol_take_frame(&parser, &received));
+    jetson_uart_transport_poll(&transport, 501u);
     CHECK(jetson_protocol_take_frame(&parser, &received));
     CHECK(received.function == JETSON_FUNC_INSPECT_REQUEST);
+    CHECK(received.timestamp_ms == 1u);
     CHECK(!jetson_protocol_take_frame(&parser, &received));
 
     CHECK(jetson_uart_transport_reset(&transport));
@@ -77,7 +80,7 @@ int main(void)
     transport.rx_dma[JETSON_UART_DMA_BUFFER_SIZE - 2u] = frame[0];
     transport.rx_dma[JETSON_UART_DMA_BUFFER_SIZE - 1u] = frame[1];
     (void)memcpy(transport.rx_dma, &frame[2], sizeof(frame) - 2u);
-    jetson_uart_transport_on_rx_event(&transport, 3u);
+    jetson_uart_transport_on_rx_event(&transport, 3u, 2u);
     jetson_uart_transport_poll(&transport, 2u);
     CHECK(jetson_protocol_take_frame(&parser, &received));
 
@@ -85,11 +88,14 @@ int main(void)
     transport.ring_head = JETSON_UART_SOFTWARE_RING_SIZE - 1u;
     transport.ring_tail = 0u;
     transport.rx_dma[0] = 0x55u;
-    jetson_uart_transport_on_rx_event(&transport, 1u);
+    jetson_protocol_feed(&parser, frame, sizeof(frame), 3u);
+    jetson_uart_transport_on_rx_event(&transport, 1u, 3u);
     CHECK(transport.stats.software_overruns == 1u);
     CHECK(transport.stats.dropped_bytes == 1u);
+    CHECK(transport.state == JETSON_UART_RECOVERY_PENDING);
 
     CHECK(jetson_uart_transport_reset(&transport));
+    CHECK(!jetson_protocol_take_frame(&parser, &received));
     jetson_protocol_feed(&parser, frame, 2u, 3u);
     CHECK(parser.used == 2u);
     jetson_uart_transport_on_uart_error(&transport);
@@ -126,6 +132,14 @@ int main(void)
     jetson_uart_transport_poll(&transport, 7u);
     CHECK(jetson_uart_transport_send_async(&transport, frame, sizeof(frame)));
     CHECK(transmit_calls == 2u);
+
+    /* A stalled main loop must still enforce inter-fragment receive time. */
+    (void)memcpy(transport.rx_dma, frame, sizeof(frame));
+    jetson_uart_transport_on_rx_event(&transport, 2u, UINT32_MAX - 25u);
+    jetson_uart_transport_on_rx_event(&transport, sizeof(frame), 80u);
+    jetson_uart_transport_poll(&transport, 400u);
+    CHECK(!jetson_protocol_take_frame(&parser, &received));
+    CHECK(parser.stats.frame_timeouts == 1u);
     puts("jetson_uart_transport test passed");
     return 0;
 }

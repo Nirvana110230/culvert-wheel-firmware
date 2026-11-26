@@ -35,6 +35,7 @@ typedef struct
     jetson_protocol_t *parser;
     uint8_t rx_dma[JETSON_UART_DMA_BUFFER_SIZE];
     uint8_t rx_ring[JETSON_UART_SOFTWARE_RING_SIZE];
+    uint32_t rx_time_ms[JETSON_UART_SOFTWARE_RING_SIZE];
     uint8_t tx_buffer[JETSON_PROTOCOL_MAX_FRAME_SIZE];
     volatile uint16_t dma_position;
     volatile uint16_t ring_head;
@@ -60,11 +61,12 @@ bool jetson_uart_transport_reset(jetson_uart_transport_t *transport);
 
 /* ISR entry points used by the HAL callbacks; they never parse complete frames. */
 void jetson_uart_transport_on_rx_event(jetson_uart_transport_t *transport,
-                                       uint16_t dma_position);
+                                       uint16_t dma_position,
+                                       uint32_t received_ms);
 void jetson_uart_transport_on_uart_error(jetson_uart_transport_t *transport);
 
 /* Called only by the shared HAL callback dispatcher. */
-void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position);
+void jetson_uart_transport_dispatch_rx_event(uint16_t dma_position, uint32_t received_ms);
 void jetson_uart_transport_dispatch_uart_error(void);
 void jetson_uart_transport_dispatch_tx_complete(void);
 

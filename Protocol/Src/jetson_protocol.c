@@ -114,6 +114,7 @@ void jetson_protocol_feed(jetson_protocol_t *parser,
         return;
     }
 
+    jetson_protocol_poll(parser, now_ms);
     for (index = 0u; index < length; ++index)
     {
         const uint8_t byte = data[index];

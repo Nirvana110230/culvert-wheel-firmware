@@ -25,6 +25,8 @@ typedef struct
     bool direction_mapping_verified;
     double maximum_motor_rpm;
     bool maximum_rpm_verified;
+    /* Original wheel firmware truncates tangential speed, wheel RPM and shaft RPM. */
+    bool legacy_wheel_quantization;
 } chassis_kinematics_config_t;
 
 typedef struct

@@ -69,6 +69,9 @@ bool rs485_transport_begin(rs485_transport_t *transport,
 /* Advances non-blocking direction and timeout states. */
 void rs485_transport_poll(rs485_transport_t *transport, uint32_t now_ms);
 
+/* Bound the pre-transmit wait for an idle line using the response budget. */
+void rs485_transport_wait_for_bus(rs485_transport_t *transport, uint32_t now_ms);
+
 /* These callbacks are accepted only in their matching active state. */
 bool rs485_transport_dma_complete(rs485_transport_t *transport, uint32_t now_ms);
 bool rs485_transport_uart_error(rs485_transport_t *transport, uint32_t now_ms);

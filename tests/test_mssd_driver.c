@@ -862,8 +862,170 @@ static bool test_active_transaction_can_be_cancelled_for_safety(void)
     return true;
 }
 
+static bool test_right_stop_timeout_still_attempts_left(void)
+{
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    uint8_t late_right[8];
+    uint8_t left[8];
+    mssd_transaction_result_t result;
+
+    CHECK(setup(&driver, &transport, &mock, mssd_driver_default_config()));
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_BOTH, MSSD_STOP_EMERGENCY,
+                                   0u) == MSSD_REQUEST_ACCEPTED);
+    (void)make_write_response(&transport, late_right);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 0u));
+    mssd_driver_poll(&driver, 23u);
+    CHECK(driver.result.right == MSSD_SIDE_FAILED);
+    CHECK(transport.request[3] == MSSD_REG_LEFT_STOP);
+    CHECK(transport.request[5] == MSSD_STOP_EMERGENCY);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 24u));
+    CHECK(mssd_driver_on_response(&driver, late_right, sizeof(late_right), 28u) ==
+          MSSD_RESPONSE_INVALID_FRAME);
+    (void)make_write_response(&transport, left);
+    CHECK(mssd_driver_on_response(&driver, left, sizeof(left), 29u) ==
+          MSSD_RESPONSE_ACCEPTED);
+    result = mssd_driver_get_result(&driver);
+    CHECK(result.right == MSSD_SIDE_FAILED && result.left == MSSD_SIDE_SUCCEEDED);
+    CHECK(result.completion == MSSD_COMPLETION_PARTIAL_COMMIT);
+    CHECK(mssd_driver_acknowledge(&driver, 30u));
+
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_BOTH, MSSD_STOP_EMERGENCY,
+                                   31u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 31u));
+    mssd_driver_poll(&driver, 54u);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 55u));
+    mssd_driver_poll(&driver, 78u);
+    result = mssd_driver_get_result(&driver);
+    CHECK(result.right == MSSD_SIDE_FAILED && result.left == MSSD_SIDE_FAILED);
+    CHECK(result.completion == MSSD_COMPLETION_FAILED);
+    return true;
+}
+
+static bool test_failed_read_invalidates_configuration(void)
+{
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    CHECK(setup(&driver, &transport, &mock, mssd_driver_default_config()));
+    CHECK(confirm_configuration(&driver, &transport, &mock, 0u));
+    CHECK(mssd_driver_request_configuration(&driver, 10u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 10u));
+    mssd_driver_poll(&driver, 33u);
+    CHECK(!driver.configuration.valid);
+    CHECK(mssd_driver_acknowledge(&driver, 34u));
+    mssd_driver_set_motion_authorized(&driver, true);
+    CHECK(mssd_driver_request_target_pair(&driver, 1, 1, 35u) ==
+          MSSD_REQUEST_CONFIG_UNVERIFIED);
+    return true;
+}
+
+static bool test_brake_engage_attempts_left_after_right_failure(void)
+{
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    mssd_driver_config_t config = mssd_driver_default_config();
+    uint8_t exception[] = {0x01u, 0x86u, 0x04u, 0x00u, 0x00u};
+
+    config.right_brake = (mssd_brake_mapping_t){1u, 0u, true};
+    config.left_brake = (mssd_brake_mapping_t){1u, 0u, true};
+    CHECK(setup(&driver, &transport, &mock, config));
+    CHECK(mssd_driver_request_brake(&driver, MSSD_CHANNEL_BOTH, MSSD_BRAKE_ENGAGE,
+                                    0u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 0u));
+    append_crc(exception, 3u);
+    CHECK(mssd_driver_on_response(&driver, exception, sizeof(exception), 4u) ==
+          MSSD_RESPONSE_ACCEPTED);
+    CHECK(transport.state == RS485_SWITCH_TO_TX);
+    CHECK(transport.request[1] == 0x06u && transport.request[3] == 0x3Fu &&
+          transport.request[5] == 1u);
+    CHECK(complete_write(&driver, &transport, &mock, 5u));
+    CHECK(driver.result.right == MSSD_SIDE_FAILED && driver.result.left == MSSD_SIDE_SUCCEEDED);
+    CHECK(driver.result.completion == MSSD_COMPLETION_PARTIAL_COMMIT);
+    CHECK(mssd_driver_acknowledge(&driver, 10u));
+
+    CHECK(mssd_driver_request_brake(&driver, MSSD_CHANNEL_BOTH, MSSD_BRAKE_RELEASE,
+                                    11u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 11u));
+    mssd_driver_poll(&driver, 34u);
+    CHECK(driver.result.right == MSSD_SIDE_FAILED && driver.result.left == MSSD_SIDE_NOT_ATTEMPTED);
+    CHECK(driver.result.completion == MSSD_COMPLETION_FAILED);
+    return true;
+}
+
+static bool test_configuration_write_requires_separate_readback(void)
+{
+    static const uint8_t expected[] = {
+        0x01u, 0x10u, 0x00u, 0x7Bu, 0x00u, 0x04u, 0x08u,
+        0x00u, 0x01u, 0x00u, 0x00u, 0x00u, 0x01u, 0x00u, 0x01u, 0x92u, 0x1Eu,
+    };
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    mssd_configuration_snapshot_t snapshot;
+    uint8_t response[8];
+
+    CHECK(setup(&driver, &transport, &mock, mssd_driver_default_config()));
+    CHECK(confirm_configuration(&driver, &transport, &mock, 0u));
+    mssd_driver_set_motion_authorized(&driver, true);
+    CHECK(mssd_driver_request_initialize_configuration(&driver, 6u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(driver.operation == MSSD_OPERATION_INITIALIZE_CONFIGURATION);
+    CHECK(transport.request_length == sizeof(expected));
+    CHECK(memcmp(transport.request, expected, sizeof(expected)) == 0);
+    CHECK(!mssd_driver_get_motion_authorized(&driver));
+    CHECK(!mssd_driver_get_configuration(&driver, &snapshot));
+
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 6u));
+    (void)make_write_response(&transport, response);
+    response[5] = 2u;
+    append_crc(response, 6u);
+    CHECK(mssd_driver_on_response(&driver, response, sizeof(response), 10u) ==
+          MSSD_RESPONSE_INVALID_FRAME);
+    CHECK(mssd_driver_get_error(&driver).modbus_status == MODBUS_RTU_VALIDATION_ECHO_ERROR);
+    (void)make_write_response(&transport, response);
+    CHECK(mssd_driver_on_response(&driver, response, sizeof(response), 11u) ==
+          MSSD_RESPONSE_ACCEPTED);
+    CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_COMPLETE);
+    CHECK(!mssd_driver_get_configuration(&driver, &snapshot));
+    CHECK(mssd_driver_acknowledge(&driver, 12u));
+    CHECK(mssd_driver_request_target_pair(&driver, 1, -1, 13u) == MSSD_REQUEST_CONFIG_UNVERIFIED);
+    CHECK(confirm_configuration(&driver, &transport, &mock, 14u));
+    CHECK(mssd_driver_request_target_pair(&driver, 1, -1, 20u) ==
+          MSSD_REQUEST_MOTION_NOT_AUTHORIZED);
+    mssd_driver_set_motion_authorized(&driver, true);
+    CHECK(mssd_driver_request_target_pair(&driver, 1, -1, 21u) == MSSD_REQUEST_ACCEPTED);
+    return true;
+}
+
+static bool test_configuration_write_timeout_does_not_retry_or_restore_old_snapshot(void)
+{
+    mssd_driver_t driver;
+    rs485_transport_t transport;
+    mock_port_t mock;
+    mssd_configuration_snapshot_t snapshot;
+    mssd_driver_config_t config = mssd_driver_default_config();
+
+    config.read_retry_limit = MSSD_MAX_READ_RETRIES;
+    CHECK(setup(&driver, &transport, &mock, config));
+    CHECK(confirm_configuration(&driver, &transport, &mock, 0u));
+    CHECK(mssd_driver_request_initialize_configuration(&driver, 6u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_waiting_response(&driver, &transport, &mock, 6u));
+    mssd_driver_poll(&driver, 29u);
+    CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_FAILED);
+    CHECK(mssd_driver_get_error(&driver).code == MSSD_ERROR_TIMEOUT);
+    CHECK(!mssd_driver_get_configuration(&driver, &snapshot));
+    return true;
+}
+
 int main(void)
 {
+    RUN(test_configuration_write_requires_separate_readback);
+    RUN(test_configuration_write_timeout_does_not_retry_or_restore_old_snapshot);
+    RUN(test_brake_engage_attempts_left_after_right_failure);
+    RUN(test_failed_read_invalidates_configuration);
+    RUN(test_right_stop_timeout_still_attempts_left);
     RUN(test_init_is_software_only_and_defaults_are_safe);
     RUN(test_status_and_configuration_read_requests);
     RUN(test_target_golden_frames);

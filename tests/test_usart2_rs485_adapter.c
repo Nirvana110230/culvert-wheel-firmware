@@ -20,6 +20,7 @@ static unsigned jetson_rx_events;
 static unsigned jetson_errors;
 static unsigned jetson_tx_events;
 static uint32_t interrupt_mask;
+static uint32_t rx_tick;
 static bool hal_contract_failed;
 
 #define CHECK(condition)                                                               \
@@ -146,9 +147,15 @@ void __enable_irq(void)
     interrupt_mask = 0u;
 }
 
-void jetson_uart_transport_dispatch_rx_event(uint16_t size)
+uint32_t HAL_GetTick(void)
+{
+    return rx_tick;
+}
+
+void jetson_uart_transport_dispatch_rx_event(uint16_t size, uint32_t received_ms)
 {
     (void)size;
+    (void)received_ms;
     ++jetson_rx_events;
 }
 
@@ -178,6 +185,7 @@ static void append_crc(uint8_t *frame, size_t payload_length)
 static void reset_hal(void)
 {
     receive_result = HAL_OK;
+    rx_tick = 0u;
     abort_result = HAL_OK;
     transmit_result = HAL_OK;
     receive_calls = 0u;
@@ -237,12 +245,17 @@ static bool reach_response_wait(usart2_rs485_adapter_t *adapter,
     huart2.tc_flag = 0u;
     usart2_rs485_adapter_poll(adapter, start_ms);
     CHECK(transport->state == RS485_DMA_TX);
+    tx_dma->state = HAL_DMA_STATE_BUSY;
+    usart2_rs485_adapter_dispatch_tx_dma_irq(tx_dma);
+    CHECK(!adapter->tx_dma_event_pending);
+    tx_dma->state = HAL_DMA_STATE_READY;
     usart2_rs485_adapter_dispatch_tx_dma_irq(tx_dma);
     CHECK(transport->state == RS485_DMA_TX);
     usart2_rs485_adapter_poll(adapter, start_ms + 1u);
     CHECK(transport->state == RS485_WAIT_UART_TC);
     huart2.tc_flag = UART_FLAG_TC;
     HAL_UART_TxCpltCallback(&huart2);
+    CHECK(adapter->de_port->last_state == GPIO_PIN_RESET);
     usart2_rs485_adapter_poll(adapter, start_ms + 2u);
     CHECK(transport->state == RS485_SWITCH_TO_RX);
     usart2_rs485_adapter_poll(adapter, start_ms + 3u);
@@ -482,12 +495,14 @@ static bool test_transaction_end_discards_residual_bytes(void)
                                    MSSD_CHANNEL_LEFT,
                                    MSSD_STOP_NORMAL,
                                    6u) == MSSD_REQUEST_ACCEPTED);
-    CHECK(reach_response_wait(&adapter, &transport, &tx_dma, 6u));
+    usart2_rs485_adapter_poll(&adapter, 6u);
+    CHECK(transport.state == RS485_SWITCH_TO_TX);
+    CHECK(reach_response_wait(&adapter, &transport, &tx_dma, 10u));
     (void)memcpy(response, transport.request, sizeof(response));
     (void)memcpy(&adapter.rx_dma_buffer[11], response, sizeof(response));
     huart2.rx_event_type = HAL_UART_RXEVENT_IDLE;
     HAL_UARTEx_RxEventCallback(&huart2, 19u);
-    usart2_rs485_adapter_poll(&adapter, 10u);
+    usart2_rs485_adapter_poll(&adapter, 14u);
     CHECK(mssd_driver_get_state(&driver) == MSSD_DRIVER_COMPLETE);
     CHECK(usart2_rs485_adapter_stop(&adapter));
     return true;
@@ -521,8 +536,133 @@ static bool test_timeout_clears_partial_frame(void)
     return true;
 }
 
+static bool test_dma_abort_before_reuse_and_fast_slave_response(void)
+{
+    usart2_rs485_adapter_t adapter;
+    rs485_transport_t transport;
+    mssd_driver_t driver;
+    DMA_HandleTypeDef rx_dma = {0};
+    DMA_HandleTypeDef tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+
+    CHECK(setup(&adapter, &transport, &driver, &rx_dma, &tx_dma, &de_port));
+    CHECK(mssd_driver_request_configuration(&driver, 0u) == MSSD_REQUEST_ACCEPTED);
+    usart2_rs485_adapter_poll(&adapter, 0u);
+    CHECK(mssd_driver_abort_for_safety(&driver, 1u));
+    CHECK(transmit_abort_calls == 1u);
+    CHECK(!adapter.tx_active && de_port.last_state == GPIO_PIN_RESET);
+    CHECK(mssd_driver_acknowledge(&driver, 1u));
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_LEFT,
+                                   MSSD_STOP_EMERGENCY, 1u) == MSSD_REQUEST_ACCEPTED);
+    usart2_rs485_adapter_poll(&adapter, 1u);
+    CHECK(transmit_calls == 1u);
+    usart2_rs485_adapter_poll(&adapter, 6u);
+    CHECK(transmit_calls == 2u);
+    usart2_rs485_adapter_dispatch_tx_dma_irq(&tx_dma);
+    HAL_UART_TxCpltCallback(&huart2);
+    CHECK(!adapter.de_transmit);
+    (void)memcpy(adapter.rx_dma_buffer, transport.request, 8u);
+    huart2.rx_event_type = HAL_UART_RXEVENT_IDLE;
+    HAL_UARTEx_RxEventCallback(&huart2, 8u);
+    usart2_rs485_adapter_poll(&adapter, 19u);
+    usart2_rs485_adapter_poll(&adapter, 20u);
+    CHECK(driver.state == MSSD_DRIVER_COMPLETE);
+    CHECK(usart2_rs485_adapter_stop(&adapter));
+    return true;
+}
+
+static bool test_busy_bus_has_bounded_wait_without_transmitting(void)
+{
+    usart2_rs485_adapter_t adapter;
+    rs485_transport_t transport;
+    mssd_driver_t driver;
+    DMA_HandleTypeDef rx_dma = {0};
+    DMA_HandleTypeDef tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+    uint32_t tick;
+
+    CHECK(setup(&adapter, &transport, &driver, &rx_dma, &tx_dma, &de_port));
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_BOTH, MSSD_STOP_EMERGENCY,
+                                   0u) == MSSD_REQUEST_ACCEPTED);
+    for (tick = 0u; tick <= 40u; tick += 4u)
+    {
+        /* Continuous traffic can advance DMA without issuing an IDLE IRQ. */
+        rx_dma.remaining = USART2_RS485_RX_DMA_SIZE - 1u - tick / 4u;
+        usart2_rs485_adapter_poll(&adapter, tick);
+        CHECK(transmit_calls == 0u && de_port.last_state == GPIO_PIN_RESET);
+    }
+    CHECK(driver.state == MSSD_DRIVER_FAILED && driver.error.code == MSSD_ERROR_TIMEOUT);
+    CHECK(driver.result.right == MSSD_SIDE_FAILED && driver.result.left == MSSD_SIDE_FAILED);
+    CHECK(transport.errors.timeouts == 2u);
+    CHECK(usart2_rs485_adapter_stop(&adapter));
+    return true;
+}
+
+static bool test_failed_rx_recovery_resolves_subsequent_stop(void)
+{
+    usart2_rs485_adapter_t adapter;
+    rs485_transport_t transport;
+    mssd_driver_t driver;
+    DMA_HandleTypeDef rx_dma = {0};
+    DMA_HandleTypeDef tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+
+    CHECK(setup(&adapter, &transport, &driver, &rx_dma, &tx_dma, &de_port));
+    receive_result = HAL_ERROR;
+    HAL_UART_ErrorCallback(&huart2);
+    usart2_rs485_adapter_poll(&adapter, 0u);
+    CHECK(adapter.state == USART2_RS485_ADAPTER_STOPPED);
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_BOTH, MSSD_STOP_EMERGENCY,
+                                   1u) == MSSD_REQUEST_ACCEPTED);
+    usart2_rs485_adapter_poll(&adapter, 1u);
+    usart2_rs485_adapter_poll(&adapter, 2u);
+    CHECK(driver.state == MSSD_DRIVER_FAILED && driver.error.code == MSSD_ERROR_TRANSPORT);
+    CHECK(driver.result.right == MSSD_SIDE_FAILED && driver.result.left == MSSD_SIDE_FAILED);
+    CHECK(transmit_calls == 0u && de_port.last_state == GPIO_PIN_RESET);
+    CHECK(usart2_rs485_adapter_stop(&adapter));
+    return true;
+}
+
+static bool test_rx_fragments_respect_wire_gap_before_foreground_poll(void)
+{
+    usart2_rs485_adapter_t adapter;
+    rs485_transport_t transport;
+    mssd_driver_t driver;
+    DMA_HandleTypeDef rx_dma = {0};
+    DMA_HandleTypeDef tx_dma = {0};
+    GPIO_TypeDef de_port = {0};
+
+    CHECK(setup(&adapter, &transport, &driver, &rx_dma, &tx_dma, &de_port));
+    transport.timeouts.response_ms = 100u;
+    CHECK(mssd_driver_request_stop(&driver, MSSD_CHANNEL_LEFT, MSSD_STOP_EMERGENCY,
+                                   UINT32_MAX - 10u) == MSSD_REQUEST_ACCEPTED);
+    CHECK(reach_response_wait(&adapter, &transport, &tx_dma, UINT32_MAX - 10u));
+    (void)memcpy(adapter.rx_dma_buffer, transport.request, 8u);
+    huart2.rx_event_type = HAL_UART_RXEVENT_IDLE;
+    rx_tick = UINT32_MAX - 2u;
+    HAL_UARTEx_RxEventCallback(&huart2, 3u);
+    rx_tick += 17u; /* Five wire bytes + a long silent gap. */
+    HAL_UARTEx_RxEventCallback(&huart2, 8u);
+    usart2_rs485_adapter_poll(&adapter, 20u);
+    CHECK(driver.state == MSSD_DRIVER_WAITING_RESPONSE);
+    CHECK(adapter.stats.frame_gap_resets == 1u);
+    (void)memcpy(&adapter.rx_dma_buffer[8], transport.request, 8u);
+    rx_tick += 20u;
+    HAL_UARTEx_RxEventCallback(&huart2, 11u);
+    rx_tick += 7u; /* Five wire bytes plus a short inter-fragment gap. */
+    HAL_UARTEx_RxEventCallback(&huart2, 16u);
+    usart2_rs485_adapter_poll(&adapter, rx_tick + 1u);
+    CHECK(driver.state == MSSD_DRIVER_COMPLETE);
+    CHECK(usart2_rs485_adapter_stop(&adapter));
+    return true;
+}
+
 int main(void)
 {
+    RUN(test_rx_fragments_respect_wire_gap_before_foreground_poll);
+    RUN(test_failed_rx_recovery_resolves_subsequent_stop);
+    RUN(test_busy_bus_has_bounded_wait_without_transmitting);
+    RUN(test_dma_abort_before_reuse_and_fast_slave_response);
     RUN(test_rx_frame_reaches_mssd_only_in_foreground);
     RUN(test_invalid_crc_then_valid_response);
     RUN(test_overflow_forms_error_and_recovers_rx);
@@ -532,6 +672,6 @@ int main(void)
     RUN(test_explicit_reset_clears_partial_data);
     RUN(test_transaction_end_discards_residual_bytes);
     RUN(test_timeout_clears_partial_frame);
-    puts("all 8 usart2_rs485_adapter tests passed");
+    puts("usart2_rs485_adapter tests passed");
     return 0;
 }

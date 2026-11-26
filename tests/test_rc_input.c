@@ -346,6 +346,18 @@ static void test_invalid_axis_immediately_clears_command(void)
     CHECK(rc_input_get_snapshot(&input).ch1_normalized == 0);
 }
 
+static void test_poll_cannot_revalidate_invalid_emergency_channel(void)
+{
+    rc_input_t input;
+    rc_input_init(&input);
+    submit_nominal_set(&input, 10u);
+    (void)rc_input_process_sample(&input, RC_INPUT_CH7, 1500u, 11u);
+    CHECK(rc_input_poll(&input, 12u) == 0u);
+    CHECK(!input.snapshot.channel_valid[RC_INPUT_CH7]);
+    CHECK(!input.snapshot.signal_valid);
+    CHECK(rc_input_poll(&input, 111u) == RC_INPUT_EVENT_SIGNAL_LOST);
+}
+
 int main(void)
 {
     RUN(test_normal_pulse_width);
@@ -375,6 +387,7 @@ int main(void)
     RUN(test_lost_signal_does_not_hold_nonzero_axes);
     RUN(test_neutral_confirmation_requires_complete_stable_pairs);
     RUN(test_invalid_axis_immediately_clears_command);
+    RUN(test_poll_cannot_revalidate_invalid_emergency_channel);
 
     printf("all %u rc_input tests passed\n", tests_run);
     return EXIT_SUCCESS;

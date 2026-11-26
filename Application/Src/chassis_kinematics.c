@@ -106,15 +106,38 @@ chassis_kinematics_status_t chassis_kinematics_calculate(
     }
 
     angular_component_mm_s = angular_mrad_s * config->half_track_mm / 1000.0;
+    circumference_mm = 2.0 * CHASSIS_PI * config->wheel_radius_mm;
+    if (config->legacy_wheel_quantization)
+    {
+        /* motor_velocity_to_rpm takes signed integral mm/s and mrad/s.
+           Round the 101 mm wheel circumference to its original divisor, 635. */
+        linear_mm_s = trunc(linear_mm_s);
+        angular_component_mm_s = trunc(trunc(angular_mrad_s) * config->half_track_mm / 1000.0);
+        circumference_mm = round(circumference_mm);
+        if (circumference_mm < 1.0)
+        {
+            return CHASSIS_KINEMATICS_INVALID_CONFIG;
+        }
+    }
     output->left_wheel_mm_s = linear_mm_s - angular_component_mm_s;
     output->right_wheel_mm_s = linear_mm_s + angular_component_mm_s;
-    circumference_mm = 2.0 * CHASSIS_PI * config->wheel_radius_mm;
     output->left_wheel_rpm = output->left_wheel_mm_s * 60.0 / circumference_mm;
     output->right_wheel_rpm = output->right_wheel_mm_s * 60.0 / circumference_mm;
+    if (config->legacy_wheel_quantization)
+    {
+        output->left_wheel_rpm = trunc(output->left_wheel_rpm);
+        output->right_wheel_rpm = trunc(output->right_wheel_rpm);
+    }
     left_motor_rpm = output->left_wheel_rpm * config->gear_ratio *
                      (double)config->left_motor_direction;
     right_motor_rpm = output->right_wheel_rpm * config->gear_ratio *
                       (double)config->right_motor_direction;
+    if (config->legacy_wheel_quantization)
+    {
+        /* motor_set_rpm applies the reducer after wheel RPM quantization. */
+        left_motor_rpm = trunc(left_motor_rpm);
+        right_motor_rpm = trunc(right_motor_rpm);
+    }
     if (!isfinite(left_motor_rpm) || !isfinite(right_motor_rpm))
     {
         (void)memset(output, 0, sizeof(*output));

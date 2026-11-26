@@ -7,11 +7,11 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *uart, uint16_t size)
 {
     if (uart == &huart1)
     {
-        jetson_uart_transport_dispatch_rx_event(size);
+        jetson_uart_transport_dispatch_rx_event(size, HAL_GetTick());
     }
     else
     {
-        usart2_rs485_adapter_dispatch_rx_event(uart, size);
+        usart2_rs485_adapter_dispatch_rx_event(uart, size, HAL_GetTick());
     }
 }
 

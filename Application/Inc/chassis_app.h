@@ -20,8 +20,20 @@ typedef enum
     CHASSIS_APP_STARTUP_CONFIGURATION = 0,
     CHASSIS_APP_STARTUP_RIGHT_STATUS,
     CHASSIS_APP_STARTUP_LEFT_STATUS,
-    CHASSIS_APP_RUNNING
+    CHASSIS_APP_RUNNING,
+    CHASSIS_APP_STARTUP_WRITE_CONFIGURATION
 } chassis_app_startup_state_t;
+
+/* States describe acknowledged bus commands; there is no brake position sensor. */
+typedef enum
+{
+    WHEEL_BRAKE_UNKNOWN = 0,
+    WHEEL_STOP_REQUIRED,
+    WHEEL_ENGAGE_REQUIRED,
+    WHEEL_PARKED,
+    WHEEL_RELEASE_PENDING,
+    WHEEL_RELEASED
+} chassis_wheel_brake_state_t;
 
 typedef struct
 {
@@ -38,6 +50,7 @@ typedef struct
     uint32_t jetson_self_check_period_ms;
     uint32_t emergency_beep_half_period_ms;
     bool require_jetson_self_check;
+    chassis_operating_profile_t profile;
     bool beep_active_high;
 } chassis_app_config_t;
 
@@ -86,6 +99,7 @@ typedef struct
     uint32_t uart_errors;
     uint32_t dma_errors;
     uint32_t rx_overflows;
+    uint32_t rc_capture_drops;
     motion_stop_reason_t stop_reason;
     bool motor_target_reached_available;
     bool brake_feedback_available;
@@ -109,17 +123,26 @@ typedef struct
     chassis_app_diagnostics_t diagnostics;
     chassis_app_startup_state_t startup_state;
     uint32_t inspect_request_started_ms;
+    uint32_t inspect_request_sent_ms;
+    uint32_t inspect_request_generation;
+    uint32_t inspect_tx_generation;
+    uint32_t inspection_accepted_ms;
     uint32_t next_status_poll_ms;
+    bool read_backoff_active;
     uint32_t next_target_refresh_ms;
     uint32_t next_self_check_request_ms;
     chassis_jetson_outbox_t jetson_outbox;
     chassis_jetson_tx_kind_t jetson_tx_kind;
     uint32_t jetson_tx_completion_snapshot;
+    uint32_t jetson_receive_losses;
     uint8_t jetson_tx_payload;
     bool inspect_request_active;
+    bool inspect_request_sent;
     bool safe_stop_pending;
     bool safe_stop_delivered;
     bool safe_stop_attempted;
+    bool stop_failure_latched;
+    bool recovery_stop_attempted;
     bool self_check_completed;
     bool jetson_self_check_received;
     bool jetson_self_check_passed;
@@ -127,12 +150,26 @@ typedef struct
     bool jetson_tx_inflight;
     uint8_t jetson_self_check_error;
     mssd_stop_type_t pending_stop_type;
+    mssd_stop_type_t inflight_stop_type;
     motion_stop_reason_t pending_stop_reason;
+    motion_stop_reason_t fault_reason;
     bool started;
+    chassis_wheel_brake_state_t wheel_brake_state;
+    uint32_t right_feedback_ms;
+    uint32_t left_feedback_ms;
+    uint32_t wheel_retry_ms;
+    uint32_t wheel_adapter_errors;
+    uint32_t next_rc_command_ms;
+    bool wheel_retry_delayed;
+    bool wheel_recheck_pending;
+    bool wheel_configuration_retry_requested;
 } chassis_app_t;
 
 /* Returns the offline-safe board configuration. All non-zero motion gates are off. */
 chassis_app_config_t chassis_app_default_config(void);
+
+/* Independent HT-10A wheel chassis using the original Keil motor parameters. */
+chassis_app_config_t chassis_app_wheel_rc_config(void);
 
 /* Initializes software objects only; hardware receive paths remain stopped. */
 bool chassis_app_init(chassis_app_t *app,

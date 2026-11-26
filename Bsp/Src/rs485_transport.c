@@ -150,6 +150,16 @@ void rs485_transport_poll(rs485_transport_t *transport, uint32_t now_ms)
     }
 }
 
+void rs485_transport_wait_for_bus(rs485_transport_t *transport, uint32_t now_ms)
+{
+    if ((transport != NULL) && (transport->state == RS485_SWITCH_TO_TX) &&
+        deadline_reached(now_ms, transport->state_enter_ms,
+                         transport->timeouts.response_ms))
+    {
+        enter_terminal_error(transport, RS485_TIMEOUT, now_ms);
+    }
+}
+
 bool rs485_transport_dma_complete(rs485_transport_t *transport, uint32_t now_ms)
 {
     if ((transport == NULL) || (transport->state != RS485_DMA_TX))

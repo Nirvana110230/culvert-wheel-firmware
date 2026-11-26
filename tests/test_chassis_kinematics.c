@@ -127,8 +127,32 @@ static bool test_invalid_parameters_and_non_finite_inputs_are_rejected(void)
     return true;
 }
 
+static bool test_wheel_rc_command_envelope_matches_keil(void)
+{
+    chassis_kinematics_config_t config = verified_config();
+    chassis_kinematics_output_t output;
+    config.legacy_wheel_quantization = true;
+    config.maximum_motor_rpm = 426.0;
+    /* Golden commands from motor_velocity_to_rpm followed by motor_set_rpm. */
+    const struct { int linear, angular, left, right; } commands[] = {
+        {500, 0, 244, 244}, {-500, 0, -244, -244},
+        {0, 1500, -182, 182}, {500, 1500, 57, 426},
+        {-500, 1500, -426, -57}, {250, 751, 26, 213},
+    };
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); ++i)
+    {
+        CHECK(chassis_kinematics_calculate(&config, commands[i].linear,
+                                           commands[i].angular, &output) == CHASSIS_KINEMATICS_OK);
+        CHECK(output.left_motor_rpm == commands[i].left);
+        CHECK(output.right_motor_rpm == commands[i].right);
+        CHECK(!output.limited);
+    }
+    return true;
+}
+
 int main(void)
 {
+    RUN(test_wheel_rc_command_envelope_matches_keil);
     RUN(test_straight_turn_and_rotation);
     RUN(test_independent_directions_and_proportional_limit);
     RUN(test_nonzero_requires_verified_direction_and_limit);

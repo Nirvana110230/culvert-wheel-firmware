@@ -40,6 +40,4 @@ IDLE -> SWITCH_TO_TX -> DMA_TX -> WAIT_UART_TC
 - `abort()` 明确终止活动事务并进入 `ERROR`。
 
 端口抽象约定 `set_de(false)` 为 PD7 低电平接收，`set_de(true)` 为 PD7 高电平发送。
-USART2适配层已绑定现有HAL回调分发并由组合层在 `main()` 初始化。默认固件可读取
-MSSD配置/状态和请求双侧安全停止；非零目标仍受默认关闭的多重门控，抱闸命令不由
-组合层调用。
+USART2 适配层经 HAL 回调收发，由板级入口初始化。正式轮式档还使用 FC10 写四项启动配置及各侧目标轴速，使用 FC06 控制停止与机械抱闸。请求安排和反馈校验见[轮式底盘控制主链路](chassis-control.md)。

@@ -73,10 +73,12 @@ typedef struct
     bool neutral_reported;
     bool signal_lost_reported;
     bool monitoring_started;
+    bool ignore_inspection_channel;
     uint32_t monitoring_start_ms;
 } rc_input_t;
 
 void rc_input_init(rc_input_t *input);
+void rc_input_restart_neutral_confirmation(rc_input_t *input);
 
 uint32_t rc_input_process_sample(rc_input_t *input,
                                  rc_input_channel_t channel,

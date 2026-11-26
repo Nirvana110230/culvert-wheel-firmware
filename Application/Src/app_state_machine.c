@@ -77,7 +77,8 @@ static app_transition_result_t handle_boot_safe(app_state_machine_t machine,
 {
     if (event == APP_EVENT_SELF_CHECK_PASSED)
     {
-        if (machine.selected_mode == APP_MODE_SELECTION_REMOTE)
+        if ((machine.selected_mode == APP_MODE_SELECTION_REMOTE) &&
+            (machine.profile == CHASSIS_HOST_INSPECTION))
         {
             machine.state = APP_STATE_REMOTE_ARMING;
         }
@@ -138,7 +139,8 @@ static app_transition_result_t handle_standby(app_state_machine_t machine,
         return safe_result(machine);
     }
 
-    if (event == APP_EVENT_RC_INSPECT_START)
+    if ((event == APP_EVENT_RC_INSPECT_START) &&
+        (machine.profile == CHASSIS_HOST_INSPECTION))
     {
         machine.state = APP_STATE_INSPECT_REQUESTED;
         return result_with_actions(
@@ -223,7 +225,12 @@ static app_transition_result_t handle_emergency(app_state_machine_t machine,
 {
     if (event == APP_EVENT_RC_EMERGENCY_RELEASED)
     {
-        if (machine.selected_mode == APP_MODE_SELECTION_REMOTE)
+        if (machine.boot_interrupted || machine.profile == CHASSIS_STANDALONE_RC)
+        {
+            machine.boot_interrupted = false;
+            machine.state = APP_STATE_BOOT_SAFE;
+        }
+        else if (machine.selected_mode == APP_MODE_SELECTION_REMOTE)
         {
             machine.state = APP_STATE_REMOTE_ARMING;
         }
@@ -252,10 +259,19 @@ app_transition_result_t app_state_machine_transition(app_state_machine_t current
 
     if (current.state == APP_STATE_FAULT)
     {
+        if ((current.profile == CHASSIS_STANDALONE_RC) &&
+            (event == APP_EVENT_WHEEL_FAULT_RECOVERY_IN_STANDBY))
+        {
+            current.state = APP_STATE_BOOT_SAFE;
+            current.selected_mode = APP_MODE_SELECTION_STANDBY;
+            current.boot_interrupted = false;
+        }
         return safe_result(current);
     }
 
     if ((event == APP_EVENT_MOTOR_FAULT) ||
+        (event == APP_EVENT_COMMUNICATION_FAULT) ||
+        (event == APP_EVENT_RC_CAPTURE_LOST) ||
         (event == APP_EVENT_SELF_CHECK_FAILED) ||
         ((event == APP_EVENT_RC_SIGNAL_LOST) &&
          rc_loss_requires_fault(current.state)))
@@ -265,6 +281,10 @@ app_transition_result_t app_state_machine_transition(app_state_machine_t current
 
     if (event == APP_EVENT_RC_EMERGENCY_ASSERTED)
     {
+        if (current.state == APP_STATE_BOOT_SAFE)
+        {
+            current.boot_interrupted = true;
+        }
         current.state = APP_STATE_EMERGENCY;
         return inspection_active ? safe_cancel_result(current) :
                                    safe_result(current);
@@ -325,6 +345,7 @@ app_motion_permissions_t app_state_machine_get_permissions(
     }
 
     permissions.remote_motion_allowed = (machine->state == APP_STATE_REMOTE);
-    permissions.jetson_motion_allowed = (machine->state == APP_STATE_INSPECTING);
+    permissions.jetson_motion_allowed = (machine->state == APP_STATE_INSPECTING) &&
+                                       (machine->profile == CHASSIS_HOST_INSPECTION);
     return permissions;
 }

@@ -487,6 +487,15 @@ static void test_fault_cannot_be_cleared_by_ordinary_events(void)
 
 int main(void)
 {
+    app_state_machine_t boot = app_state_machine_initial();
+    g_tests_run++;
+    boot = transition(boot, APP_EVENT_RC_SELECT_STANDBY).machine;
+    boot = transition(boot, APP_EVENT_RC_EMERGENCY_ASSERTED).machine;
+    boot = transition(boot, APP_EVENT_RC_EMERGENCY_ASSERTED).machine;
+    boot = transition(boot, APP_EVENT_RC_EMERGENCY_RELEASED).machine;
+    EXPECT_EQ(APP_STATE_BOOT_SAFE, boot.state);
+    EXPECT_EQ(APP_STATE_BOOT_SAFE,
+              transition(boot, APP_EVENT_RC_INSPECT_START).machine.state);
     test_power_on_defaults_to_boot_safe();
     test_self_check_failure_enters_latched_fault();
     test_boot_remote_selection_requires_arming_and_neutral();

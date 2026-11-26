@@ -96,6 +96,10 @@ static bool all_channels_fresh(const rc_input_t *input, uint32_t now_ms)
 
     for (channel = 0u; channel < (uint32_t)RC_INPUT_CHANNEL_COUNT; ++channel)
     {
+        if (input->ignore_inspection_channel && channel == RC_INPUT_CH5)
+        {
+            continue;
+        }
         if (!input->channel_seen[channel] ||
             !input->snapshot.channel_valid[channel] ||
             ((uint32_t)(now_ms - input->snapshot.last_valid_ms[channel]) >
@@ -116,9 +120,7 @@ static uint32_t update_neutral_confirmation(rc_input_t *input,
 
     if (!both_neutral)
     {
-        input->neutral_count = 0u;
-        input->neutral_pair_mask = 0u;
-        input->neutral_reported = false;
+        rc_input_restart_neutral_confirmation(input);
         return RC_INPUT_EVENT_NONE;
     }
 
@@ -242,6 +244,13 @@ void rc_input_init(rc_input_t *input)
     input->snapshot.mode = RC_INPUT_MODE_INVALID;
 }
 
+void rc_input_restart_neutral_confirmation(rc_input_t *input)
+{
+    input->neutral_count = 0u;
+    input->neutral_pair_mask = 0u;
+    input->neutral_reported = false;
+}
+
 static void invalidate_channel_sample(rc_input_t *input,
                                       rc_input_channel_t channel)
 {
@@ -292,6 +301,10 @@ uint32_t rc_input_process_sample(rc_input_t *input,
         return RC_INPUT_EVENT_NONE;
     }
 
+    if (input->ignore_inspection_channel && channel == RC_INPUT_CH5)
+    {
+        return RC_INPUT_EVENT_NONE;
+    }
     position = classify_switch(pulse_us);
     if (!channel_sample_is_valid(channel, pulse_us, position))
     {
@@ -364,6 +377,10 @@ uint32_t rc_input_poll(rc_input_t *input, uint32_t now_ms)
     timeout_detected = false;
     for (channel = 0u; channel < (uint32_t)RC_INPUT_CHANNEL_COUNT; ++channel)
     {
+        if (input->ignore_inspection_channel && channel == RC_INPUT_CH5)
+        {
+            continue;
+        }
         const bool channel_fresh = input->channel_seen[channel] &&
             ((uint32_t)(now_ms - input->snapshot.last_valid_ms[channel]) <=
              RC_INPUT_TIMEOUT_MS);
@@ -371,8 +388,9 @@ uint32_t rc_input_poll(rc_input_t *input, uint32_t now_ms)
             !channel_fresh :
             ((uint32_t)(now_ms - input->monitoring_start_ms) >
              RC_INPUT_TIMEOUT_MS);
-        input->snapshot.channel_valid[channel] = channel_fresh;
-        fresh = fresh && channel_fresh;
+        input->snapshot.channel_valid[channel] =
+            channel_fresh && input->snapshot.channel_valid[channel];
+        fresh = fresh && input->snapshot.channel_valid[channel];
         timeout_detected = timeout_detected || channel_timed_out;
     }
     input->snapshot.signal_valid = fresh;

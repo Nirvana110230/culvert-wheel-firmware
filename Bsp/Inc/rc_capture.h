@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define RC_CAPTURE_QUEUE_CAPACITY 16u
+
 typedef struct
 {
     uint16_t pulse_us;
@@ -32,7 +34,7 @@ static inline uint16_t rc_capture_elapsed_ticks(uint16_t rising,
     return (uint16_t)(falling - rising);
 }
 
-bool rc_capture_start(void);
+bool rc_capture_start(bool queue_inspection_channel);
 void rc_capture_stop(void);
 void rc_capture_read_snapshot(rc_capture_snapshot_t *snapshot);
 bool rc_capture_take_sample(rc_capture_sample_t *sample);

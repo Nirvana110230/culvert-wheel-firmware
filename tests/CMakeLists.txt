@@ -124,6 +124,12 @@ target_compile_options(chassis_end_to_end_tests PRIVATE
 )
 add_test(NAME chassis_end_to_end COMMAND chassis_end_to_end_tests)
 
+if(UNIX)
+    foreach(target IN ITEMS chassis_kinematics_tests chassis_app_tests chassis_end_to_end_tests)
+        target_link_libraries(${target} PRIVATE m)
+    endforeach()
+endif()
+
 add_executable(rc_input_tests
     test_rc_input.c
     ../Services/Src/rc_input.c
@@ -148,6 +154,12 @@ else()
 endif()
 
 add_test(NAME rc_input COMMAND rc_input_tests)
+
+add_executable(rc_capture_tests test_rc_capture.c ../Bsp/Src/rc_capture.c)
+target_include_directories(rc_capture_tests PRIVATE stubs ../Bsp/Inc ../Services/Inc)
+target_compile_features(rc_capture_tests PRIVATE c_std_11)
+target_compile_options(rc_capture_tests PRIVATE -Wall -Wextra -Werror -pedantic)
+add_test(NAME rc_capture COMMAND rc_capture_tests)
 
 foreach(name IN ITEMS jetson_protocol modbus_rtu)
     add_executable(${name}_tests test_${name}.c ../Protocol/Src/${name}.c)
